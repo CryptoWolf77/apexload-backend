@@ -14,7 +14,17 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.cors_origins,
+    # TODO: Before production release, restrict CORS origins to official
+    # app/website domains only.
+    allow_origins=[
+        "https://apexload.org",
+        "https://www.apexload.org",
+        "https://api.apexload.org",
+        "http://localhost",
+        "http://127.0.0.1",
+        *settings.cors_origins,
+    ],
+    allow_origin_regex=r"http://(localhost|127\.0\.0\.1):\d+",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -32,4 +42,3 @@ async def root() -> dict[str, bool | str]:
         "success": True,
         "message": "ApexLoad backend skeleton. Visit /docs or /api/health.",
     }
-
