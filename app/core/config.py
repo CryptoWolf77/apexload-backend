@@ -8,7 +8,7 @@ load_dotenv()
 
 class Settings:
     app_name: str = "ApexLoad Backend"
-    app_version: str = "1.2B"
+    app_version: str = "1.2C"
     api_prefix: str = "/api"
     api_key: str | None = os.getenv("API_KEY")
     environment: str = os.getenv("ENVIRONMENT", "development")

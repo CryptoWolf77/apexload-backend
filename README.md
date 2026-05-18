@@ -1,9 +1,10 @@
 # ApexLoad Backend
 
-Version 1.2B backend skeleton for **ApexLoad: Social Downloader**.
+Version 1.2C backend skeleton for **ApexLoad: Social Downloader**.
 
 This version uses `yt-dlp` for real metadata analysis in `POST /api/analyze`,
-while download jobs, file serving, queues, and media processing remain demo-only.
+real local download jobs in `POST /api/download`, and local file serving through
+`GET /api/file/{fileId}`. Jobs are kept in memory for now.
 
 ## Stack
 
@@ -174,36 +175,99 @@ Content-Type: application/json
 }
 ```
 
+Creates a real background download job and stores files under
+`storage/downloads/{jobId}/`.
+
+Test start download:
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/download \
+  -H "Content-Type: application/json" \
+  -d "{\"url\":\"https://www.youtube.com/watch?v=dQw4w9WgXcQ\",\"selectedItems\":[{\"formatId\":\"720p\",\"type\":\"video\"}],\"premium\":false,\"noWatermark\":false}"
+```
+
 ### Download Status
 
 ```http
 GET /api/download/status/{jobId}
 ```
 
-### Demo File Endpoint
+Test status:
+
+```bash
+curl http://127.0.0.1:8000/api/download/status/JOB_ID
+```
+
+### File Endpoint
 
 ```http
 GET /api/file/{fileId}
 ```
 
-## Version 1.2B Notes
+Open a completed file:
+
+```text
+http://127.0.0.1:8000/api/file/FILE_ID
+```
+
+## Quick Test Commands
+
+Health:
+
+```bash
+curl http://127.0.0.1:8000/api/health
+```
+
+Analyze YouTube:
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/analyze \
+  -H "Content-Type: application/json" \
+  -d "{\"url\":\"https://www.youtube.com/watch?v=dQw4w9WgXcQ\"}"
+```
+
+Start download:
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/download \
+  -H "Content-Type: application/json" \
+  -d "{\"url\":\"https://www.youtube.com/watch?v=dQw4w9WgXcQ\",\"selectedItems\":[{\"formatId\":\"720p\",\"type\":\"video\"}],\"premium\":false,\"noWatermark\":false}"
+```
+
+Status:
+
+```bash
+curl http://127.0.0.1:8000/api/download/status/JOB_ID
+```
+
+File:
+
+```text
+Open http://127.0.0.1:8000/api/file/FILE_ID
+```
+
+## Version 1.2C Notes
 
 - `POST /api/analyze` uses `yt-dlp` with `download=False`.
+- `POST /api/download` creates real local background download jobs.
+- `GET /api/download/status/{jobId}` reports in-memory job status and files.
+- `GET /api/file/{fileId}` serves completed local files.
 - Real platform links may fail when a platform blocks metadata extraction,
   requires login, or restricts public access. The API returns a clean error or
   mock fallback depending on `USE_MOCK_ANALYZE_FALLBACK`.
 - Optional Instagram cookies can improve public Instagram metadata analysis, but
   no real cookies are stored in this repository or copied into the Docker image.
-- No real media processing yet.
+- If `ffmpeg` is unavailable, video downloads use a single-file fallback where
+  possible instead of forcing merged video/audio formats.
 - No Redis queue yet.
 - No database yet.
 - `API_KEY` exists in config but is not enforced yet.
-- File endpoint returns JSON only.
+- Jobs and file registry are in memory, so they reset when the server restarts.
 
-## TODO for Version 1.2C
+## TODO for Future Versions
 
 - Add platform-specific metadata parsing.
 - Improve available format and media type detection from real platform samples.
-- Add download job structure ready for Redis in a later version.
-- Add real `yt-dlp` downloading and file serving when legally allowed.
+- Move jobs/file registry to Redis/database.
+- Add cleanup for old files.
 - Add API key enforcement or a production auth strategy.

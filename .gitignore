@@ -7,3 +7,4 @@ cookies.txt
 *.cookies
 *.cookie
 secrets/
+storage/downloads/ 

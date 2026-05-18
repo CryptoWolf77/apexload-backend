@@ -52,7 +52,6 @@ def detect_media_type(url: str) -> str:
     if any(signal in value for signal in image_signals):
         return "image"
 
-    # TODO: Real media type detection will come from the backend analyzer
-    # integration in Version 1.2B. Default to video for demo compatibility.
+    # TODO: Continue improving media type detection from real platform samples.
+    # Default to video for compatibility when the URL is ambiguous.
     return "video"
-

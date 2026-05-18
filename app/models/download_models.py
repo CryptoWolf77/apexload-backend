@@ -22,6 +22,7 @@ class DownloadStartResponse(BaseModel):
 
 class DownloadFile(BaseModel):
     fileId: str
+    filename: str
     fileName: str
     type: str
     size: str
@@ -33,12 +34,13 @@ class DownloadStatusResponse(BaseModel):
     jobId: str
     status: str
     progress: int
+    platform: str | None = None
     message: str
     files: list[DownloadFile]
+    error: str | None = None
 
 
 class FileEndpointResponse(BaseModel):
     success: bool
     fileId: str
     message: str
-
