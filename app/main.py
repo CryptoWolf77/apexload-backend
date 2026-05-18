@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api.routes import analyze, download, files, health
+from app.api.routes import analyze, debug, download, files, health
 from app.core.config import get_settings
 
 settings = get_settings()
@@ -9,7 +9,7 @@ settings = get_settings()
 app = FastAPI(
     title=settings.app_name,
     version=settings.app_version,
-    description="ApexLoad Version 1.2A backend skeleton with demo API responses.",
+    description="ApexLoad Version 1.2B backend with real yt-dlp analyze and demo download responses.",
 )
 
 app.add_middleware(
@@ -34,6 +34,7 @@ app.include_router(health.router, prefix=settings.api_prefix)
 app.include_router(analyze.router, prefix=settings.api_prefix)
 app.include_router(download.router, prefix=settings.api_prefix)
 app.include_router(files.router, prefix=settings.api_prefix)
+app.include_router(debug.router, prefix=f"{settings.api_prefix}/debug", tags=["debug"])
 
 
 @app.get("/")

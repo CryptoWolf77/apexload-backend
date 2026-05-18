@@ -2,7 +2,11 @@ from pydantic import BaseModel, Field
 
 
 class AnalyzeRequest(BaseModel):
-    url: str = Field(..., min_length=1, examples=["https://www.instagram.com/reel/example"])
+    url: str = Field(
+        ...,
+        min_length=1,
+        examples=["https://www.instagram.com/reel/example"],
+    )
 
 
 class FormatOption(BaseModel):
@@ -18,10 +22,12 @@ class FormatOption(BaseModel):
 
 class AnalyzeResponse(BaseModel):
     success: bool
-    platform: str
-    mediaType: str
-    title: str
-    thumbnail: str
+    source: str | None = None
+    platform: str | None = None
+    mediaType: str | None = None
+    title: str | None = None
+    thumbnail: str | None = None
     duration: str | None = None
-    formats: list[FormatOption]
-
+    formats: list[FormatOption] = Field(default_factory=list)
+    error: str | None = None
+    message: str | None = None

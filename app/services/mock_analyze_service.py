@@ -10,6 +10,7 @@ class MockAnalyzeService:
         if media_type == "image":
             return AnalyzeResponse(
                 success=True,
+                source="mock_fallback",
                 platform=platform,
                 mediaType="image",
                 title=self._image_title(platform),
@@ -20,6 +21,7 @@ class MockAnalyzeService:
 
         return AnalyzeResponse(
             success=True,
+            source="mock_fallback",
             platform=platform,
             mediaType="video",
             title="Amazing travel sunset video",
@@ -143,4 +145,3 @@ class MockAnalyzeService:
                 available=True,
             ),
         ]
-

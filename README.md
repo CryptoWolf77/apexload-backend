@@ -1,10 +1,9 @@
 # ApexLoad Backend
 
-Version 1.2A backend skeleton for **ApexLoad: Social Downloader**.
+Version 1.2B backend skeleton for **ApexLoad: Social Downloader**.
 
-This project is intentionally mock-only. It provides clean FastAPI endpoints so
-the Flutter app can connect to a real VPS API before downloader processing is
-implemented.
+This version uses `yt-dlp` for real metadata analysis in `POST /api/analyze`,
+while download jobs, file serving, queues, and media processing remain demo-only.
 
 ## Stack
 
@@ -12,6 +11,7 @@ implemented.
 - FastAPI
 - Uvicorn
 - Docker
+- yt-dlp
 
 ## Run Locally
 
@@ -75,7 +75,86 @@ Content-Type: application/json
 }
 ```
 
-Returns mock video or image media data.
+Returns real normalized metadata when `yt-dlp` can analyze the public link.
+If `USE_MOCK_ANALYZE_FALLBACK=true`, supported public links that `yt-dlp` cannot
+analyze fall back to demo data with `"source": "mock_fallback"`. Unsupported or
+unsafe URLs return a clean error.
+
+### Instagram Cookies Support
+
+Instagram may block public metadata extraction without authentication, sometimes
+returning empty media, login-required, or cookie-required responses. ApexLoad
+supports optional server-side Instagram cookies for public content analysis only.
+
+Do not ask app users for Instagram login, do not collect credentials, and do not
+commit cookies to GitHub.
+
+Local/server configuration:
+
+```env
+ENABLE_INSTAGRAM_COOKIES=true
+INSTAGRAM_COOKIES_FILE=/app/secrets/instagram_cookies.txt
+```
+
+Put the Netscape-format cookie file at the configured path on the server. The
+Docker image creates `/app/secrets`, but it does not copy real cookies into the
+image. In Coolify, mount or create the cookie file as a secret/volume and set the
+two environment variables above.
+
+If Instagram analysis fails without cookies, the backend logs:
+
+```text
+Instagram analyze failed without cookies. Retrying with cookies if enabled.
+```
+
+Successful no-cookie responses use `"source": "yt_dlp"`. Successful cookie retry
+responses use `"source": "yt_dlp_cookies"`. Fallback responses use
+`"source": "mock_fallback"`.
+
+For Instagram, the backend tries several safe `yt-dlp` analyze configurations:
+no cookies, cookies, cookies with the default Instagram web `app_id`, and cookies
+with `app_id` plus browser-like headers. Instagram may still reject `yt-dlp` even
+with valid cookies, so reliability cannot be guaranteed.
+
+Using Instagram cookies may risk account restrictions. Use responsibly and only
+for public content you are allowed to access.
+
+Analyze an Instagram Reel:
+
+```bash
+curl -X POST http://localhost:8000/api/analyze \
+  -H "Content-Type: application/json" \
+  -d "{\"url\":\"https://www.instagram.com/reel/example\"}"
+```
+
+Analyze an Instagram Post:
+
+```bash
+curl -X POST http://localhost:8000/api/analyze \
+  -H "Content-Type: application/json" \
+  -d "{\"url\":\"https://www.instagram.com/p/example\"}"
+```
+
+Test YouTube:
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/analyze \
+  -H "Content-Type: application/json" \
+  -d "{\"url\":\"https://www.youtube.com/watch?v=dQw4w9WgXcQ\"}"
+```
+
+Test Instagram clean URL:
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/analyze \
+  -H "Content-Type: application/json" \
+  -d "{\"url\":\"https://www.instagram.com/reel/DYCsJWbNZU7/\"}"
+```
+
+Expected Instagram behavior: if cookies are configured and valid, blocked public
+metadata requests may return `"source": "yt_dlp_cookies"`. If cookies are not
+configured, the API returns a graceful `instagram_requires_auth` error or mock
+fallback, depending on `USE_MOCK_ANALYZE_FALLBACK`.
 
 ### Start Download
 
@@ -107,21 +186,24 @@ GET /api/download/status/{jobId}
 GET /api/file/{fileId}
 ```
 
-## Version 1.2A Notes
+## Version 1.2B Notes
 
-- No real `yt-dlp` integration yet.
+- `POST /api/analyze` uses `yt-dlp` with `download=False`.
+- Real platform links may fail when a platform blocks metadata extraction,
+  requires login, or restricts public access. The API returns a clean error or
+  mock fallback depending on `USE_MOCK_ANALYZE_FALLBACK`.
+- Optional Instagram cookies can improve public Instagram metadata analysis, but
+  no real cookies are stored in this repository or copied into the Docker image.
 - No real media processing yet.
 - No Redis queue yet.
 - No database yet.
 - `API_KEY` exists in config but is not enforced yet.
 - File endpoint returns JSON only.
 
-## TODO for Version 1.2B
+## TODO for Version 1.2C
 
-- Add `yt-dlp` link analysis.
 - Add platform-specific metadata parsing.
-- Add real available format extraction.
-- Add safer URL validation and platform allowlist.
+- Improve available format and media type detection from real platform samples.
 - Add download job structure ready for Redis in a later version.
+- Add real `yt-dlp` downloading and file serving when legally allowed.
 - Add API key enforcement or a production auth strategy.
-

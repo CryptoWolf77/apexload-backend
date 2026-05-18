@@ -4,4 +4,7 @@ __pycache__/
 .env
 .git/
 .pytest_cache/
-
+secrets/
+*.cookies
+cookies.txt
+instagram_cookies.txt
