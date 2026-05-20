@@ -24,8 +24,10 @@ async def config_debug() -> dict[str, bool | str]:
     settings = get_settings()
     return {
         "enableInstagramCookies": settings.enable_instagram_cookies,
+        "enableYoutubeCookies": settings.enable_youtube_cookies,
         "useMockAnalyzeFallback": settings.use_mock_analyze_fallback,
         "instagramCookiesFile": settings.instagram_cookies_file,
+        "youtubeCookiesFile": settings.youtube_cookies_file,
     }
 
 
@@ -51,6 +53,80 @@ async def instagram_cookies_debug() -> dict[str, bool | int | str | None]:
         "cookieFileExists": status["cookieFileExists"],
         "cookieFileSize": status["cookieFileSize"],
         "cookieFileValid": bool(status["cookieFileValid"] and valid),
+        "cookieValidationReason": reason,
+    }
+
+
+@router.get("/instagram-image")
+async def instagram_image_debug(
+    url: str,
+) -> dict[str, bool | int | str | None]:
+    # TODO: Remove or protect debug endpoints before production release.
+    debug = instagram_service.debug_instagram_image_extraction(url)
+    return {
+        "success": debug["success"],
+        "url": debug["url"],
+        "cookiesEnabled": debug["cookiesEnabled"],
+        "cookieFileExists": debug["cookieFileExists"],
+        "htmlStatus": debug["htmlStatus"],
+        "finalUrl": debug["finalUrl"],
+        "htmlLength": debug["htmlLength"],
+        "foundOgImage": debug["foundOgImage"],
+        "foundDisplayUrl": debug["foundDisplayUrl"],
+        "foundCdnUrlsCount": debug["foundCdnUrlsCount"],
+        "rejectedStaticAssetsCount": debug["rejectedStaticAssetsCount"],
+        "rejectedSmallImagesCount": debug["rejectedSmallImagesCount"],
+        "acceptedCandidateSize": debug["acceptedCandidateSize"],
+        "bestImageUrlMasked": debug["bestImageUrlMasked"],
+        "reason": debug["reason"],
+    }
+
+
+@router.get("/x-image")
+async def x_image_debug(
+    url: str,
+) -> dict[str, bool | int | str | None]:
+    # TODO: Remove or protect debug endpoints before production release.
+    debug = instagram_service.debug_x_image_extraction(url)
+    return {
+        "success": debug["success"],
+        "url": debug["url"],
+        "htmlStatus": debug["htmlStatus"],
+        "finalUrl": debug["finalUrl"],
+        "htmlLength": debug["htmlLength"],
+        "foundOgImage": debug["foundOgImage"],
+        "foundTwitterImage": debug["foundTwitterImage"],
+        "foundPbsMediaCount": debug["foundPbsMediaCount"],
+        "rejectedSmallImagesCount": debug["rejectedSmallImagesCount"],
+        "acceptedCandidateSize": debug["acceptedCandidateSize"],
+        "bestImageUrlMasked": debug["bestImageUrlMasked"],
+        "reason": debug["reason"],
+    }
+
+
+@router.get("/youtube-cookies")
+async def youtube_cookies_debug() -> dict[str, bool | int | str | None]:
+    # TODO: Remove or protect debug endpoints before production release.
+    settings = get_settings()
+    raw_path = settings.youtube_cookies_file
+    resolved_path = str(Path(raw_path).expanduser().resolve()) if raw_path else ""
+    cookie_path = Path(resolved_path) if resolved_path else None
+    exists = bool(cookie_path and cookie_path.is_file())
+    size = cookie_path.stat().st_size if cookie_path and exists else 0
+    valid, reason = _validate_cookie_file(
+        cookie_path if exists else None,
+        size,
+        domain="youtube.com",
+    )
+
+    return {
+        "success": True,
+        "enableYoutubeCookies": settings.enable_youtube_cookies,
+        "cookieFileRaw": raw_path,
+        "cookieFileResolved": resolved_path,
+        "cookieFileExists": exists,
+        "cookieFileSize": size,
+        "cookieFileValid": valid,
         "cookieValidationReason": reason,
     }
 
@@ -83,7 +159,11 @@ async def test_instagram_ytdlp(
         }
 
 
-def _validate_cookie_file(cookie_path: Path | None, size: int) -> tuple[bool, str]:
+def _validate_cookie_file(
+    cookie_path: Path | None,
+    size: int,
+    domain: str = "instagram.com",
+) -> tuple[bool, str]:
     if cookie_path is None:
         return False, "Cookie file not found"
     if size <= 0:
@@ -95,16 +175,19 @@ def _validate_cookie_file(cookie_path: Path | None, size: int) -> tuple[bool, st
     except OSError:
         return False, "Cookie file could not be read"
 
-    non_empty_lines = [
-        line for line in sample_lines if line and not line.startswith("#")
-    ]
+    non_empty_lines = []
+    for line in sample_lines:
+        if line.startswith("#HttpOnly_"):
+            line = line.removeprefix("#HttpOnly_")
+        if line and not line.startswith("#"):
+            non_empty_lines.append(line)
     if not non_empty_lines:
         return False, "Cookie file has no cookie rows"
 
     has_instagram_cookie = any(
-        "instagram.com" in line.lower() and len(line.split("\t")) >= 7
+        domain in line.lower() and len(line.split("\t")) >= 7
         for line in non_empty_lines
     )
     if has_instagram_cookie:
         return True, "Cookie file looks valid"
-    return False, "Cookie file does not look like a Netscape Instagram cookie file"
+    return False, f"Cookie file does not look like a Netscape {domain} cookie file"

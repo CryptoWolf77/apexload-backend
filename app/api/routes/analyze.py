@@ -11,6 +11,7 @@ from app.services.ytdlp_analyze_service import (
     AnalyzeServiceError,
     InstagramAuthRequiredError,
     UnsupportedUrlError,
+    YouTubeAuthRequiredError,
     YtDlpAnalyzeService,
 )
 
@@ -28,6 +29,13 @@ async def analyze_link(
     settings = get_settings()
     try:
         return await run_in_threadpool(ytdlp_service.analyze, payload.url)
+    except YouTubeAuthRequiredError as exc:
+        return AnalyzeResponse(
+            success=False,
+            source="yt_dlp",
+            error=exc.error,
+            message=exc.message,
+        )
     except InstagramAuthRequiredError as exc:
         if settings.use_mock_analyze_fallback:
             logger.info("Using mock analyze fallback after Instagram auth/block response")

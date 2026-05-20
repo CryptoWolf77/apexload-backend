@@ -8,7 +8,7 @@ load_dotenv()
 
 class Settings:
     app_name: str = "ApexLoad Backend"
-    app_version: str = "1.2C"
+    app_version: str = "1.3.1"
     api_prefix: str = "/api"
     api_key: str | None = os.getenv("API_KEY")
     environment: str = os.getenv("ENVIRONMENT", "development")
@@ -21,6 +21,11 @@ class Settings:
         in {"1", "true", "yes", "on"}
     )
     instagram_cookies_file: str = os.getenv("INSTAGRAM_COOKIES_FILE", "")
+    enable_youtube_cookies: bool = (
+        os.getenv("ENABLE_YOUTUBE_COOKIES", "false").lower()
+        in {"1", "true", "yes", "on"}
+    )
+    youtube_cookies_file: str = os.getenv("YOUTUBE_COOKIES_FILE", "")
     cors_origins: list[str] = [
         origin.strip()
         for origin in os.getenv(

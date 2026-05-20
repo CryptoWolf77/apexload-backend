@@ -4,7 +4,8 @@ import shutil
 import threading
 import uuid
 from pathlib import Path
-from urllib.request import urlretrieve
+from urllib.parse import parse_qs, urlparse
+from urllib.request import Request, urlopen
 
 from app.models.download_models import (
     DownloadFile,
@@ -19,6 +20,7 @@ from app.utils.platform_detector import detect_platform
 logger = logging.getLogger("apexload.download")
 
 DOWNLOAD_ROOT = Path("storage/downloads")
+MIN_IMAGE_BYTES = 10 * 1024
 
 
 class DownloadJob:
@@ -78,13 +80,28 @@ class DownloadService:
                     item.type,
                 )
                 base_progress = 5 + int(((index - 1) / len(job.request.selectedItems)) * 85)
-                self._download_item(job, item, job_dir, base_progress)
+                try:
+                    self._download_item(job, item, job_dir, base_progress)
+                except Exception as item_exc:
+                    logger.exception(
+                        "Selected item download failed. job_id=%s format=%s",
+                        job_id,
+                        item.formatId,
+                    )
+                    job.error = self._safe_error(item_exc)
 
+            if not job.files:
+                raise RuntimeError(job.error or "Download failed")
+            message = (
+                "Some selected items could not be downloaded."
+                if job.error
+                else "Download completed"
+            )
             self._update_job(
                 job,
                 status="completed",
                 progress=100,
-                message="Download completed",
+                message=message,
             )
             logger.info("Download completed. job_id=%s files=%s", job_id, len(job.files))
         except Exception as exc:
@@ -136,18 +153,34 @@ class DownloadService:
         job_dir: Path,
         base_progress: int,
     ) -> None:
+        format_id = self._format_id(item)
+        item_type = self._item_type(item)
         self._update_job(
             job,
             status="processing",
             progress=max(base_progress, 10),
-            message=f"Downloading {item.formatId}",
+            message=f"Downloading {format_id}",
         )
-        if item.type == "image" or item.formatId in {"thumbnail", "jpg", "png", "original"}:
+        if item_type == "image" or format_id in {
+            "thumbnail",
+            "jpg",
+            "png",
+            "webp",
+            "original",
+            "high_quality",
+            "compressed",
+        }:
             self._download_image_or_thumbnail(job, item, job_dir)
             return
 
         download_url = self._download_url(job.request.url)
-        output_template = str(job_dir / f"{item.formatId}.%(ext)s")
+        is_audio_item = self._is_audio_item(item)
+        output_name = (
+            self._audio_codec(item)
+            if is_audio_item
+            else self._sanitize_filename(format_id)
+        )
+        output_template = str(job_dir / f"{output_name}.%(ext)s")
         options = {
             "quiet": True,
             "no_warnings": True,
@@ -157,8 +190,10 @@ class DownloadService:
             "restrictfilenames": True,
             "noplaylist": True,
         }
+        if is_audio_item:
+            self._configure_audio_options(options, item)
 
-        cookiefile = self._instagram_cookiefile_if_needed(job.request.url)
+        cookiefile = self._cookiefile_if_needed(job.request.url)
         if cookiefile:
             options["cookiefile"] = cookiefile
 
@@ -170,13 +205,17 @@ class DownloadService:
                 ydl.download([download_url])
             after = set(job_dir.iterdir())
         except Exception as exc:
-            raise RuntimeError(f"yt-dlp download failed: {self._safe_error(exc)}") from exc
+            raise RuntimeError(
+                self._download_error_message(job.request.url, exc, item)
+            ) from exc
 
         new_files = [path for path in after - before if path.is_file()]
         if not new_files:
-            new_files = sorted(job_dir.glob(f"{item.formatId}.*"))
+            new_files = sorted(job_dir.glob(f"{output_name}.*"))
+        if is_audio_item:
+            new_files = self._validated_audio_outputs(job_dir, item, new_files)
         for path in new_files:
-            self._register_file(job, path, item.type)
+            self._register_file(job, path, "audio" if is_audio_item else item_type)
 
     def _download_image_or_thumbnail(
         self,
@@ -184,16 +223,43 @@ class DownloadService:
         item: SelectedDownloadItem,
         job_dir: Path,
     ) -> None:
-        info = self._extract_info(job.request.url)
-        media_info = self._analyze_service._select_media_info(info)
-        image_url = self._analyze_service._thumbnail(media_info)
-        if not image_url:
-            raise RuntimeError("Image or thumbnail is not available")
+        info: dict | None = None
+        try:
+            info = self._extract_info(job.request.url)
+        except RuntimeError as exc:
+            if not self._should_try_image_html_fallback(job.request.url, exc):
+                raise
+            logger.info("Image metadata fallback after yt-dlp image error")
 
-        ext = self._extension_from_url(image_url) or self._image_extension(item)
-        output_path = job_dir / f"{self._sanitize_filename(item.formatId)}.{ext}"
-        urlretrieve(image_url, output_path)
-        self._register_file(job, output_path, "image")
+        image_url = None
+        if info:
+            media_info = self._analyze_service._select_media_info(info)
+            image_url, source = self._analyze_service.extract_best_image_url_with_source(
+                media_info
+            )
+            if image_url:
+                logger.info("Instagram image extraction source: %s", source)
+
+        if not image_url and detect_platform(job.request.url) == "Instagram":
+            image_url = self._analyze_service.extract_instagram_image_from_html(
+                self._download_url(job.request.url),
+                self._cookiefile_if_needed(job.request.url),
+            )
+        if not image_url and detect_platform(job.request.url) == "X/Twitter":
+            image_url = self._analyze_service.extract_x_image_from_html_or_metadata(
+                self._download_url(job.request.url),
+            )
+        if not image_url:
+            if detect_platform(job.request.url) == "X/Twitter":
+                raise RuntimeError("Could not find a downloadable image for this X post.")
+            raise RuntimeError(
+                "Could not find a downloadable image for this post. "
+                "Try refreshing Instagram cookies."
+            )
+
+        output_base = job_dir / self._sanitize_filename(item.formatId)
+        saved_path = self._download_image_url(image_url, output_base)
+        self._register_file(job, saved_path, "image")
 
     def _extract_info(self, url: str) -> dict:
         options = {
@@ -202,7 +268,7 @@ class DownloadService:
             "skip_download": True,
             "noplaylist": True,
         }
-        cookiefile = self._instagram_cookiefile_if_needed(url)
+        cookiefile = self._cookiefile_if_needed(url)
         if cookiefile:
             options["cookiefile"] = cookiefile
         try:
@@ -217,7 +283,7 @@ class DownloadService:
         return info
 
     def _format_selector(self, item: SelectedDownloadItem) -> str:
-        if item.type == "audio" or item.formatId == "mp3":
+        if self._is_audio_item(item):
             return "bestaudio/best"
 
         height_map = {
@@ -226,7 +292,7 @@ class DownloadService:
             "1080p": 1080,
             "2160p": 2160,
         }
-        height = height_map.get(item.formatId)
+        height = height_map.get(self._format_id(item))
         if not height:
             return "best"
 
@@ -234,6 +300,83 @@ class DownloadService:
             return f"bestvideo[height<={height}]+bestaudio/best[height<={height}]/best"
         logger.info("ffmpeg not found. Using single-file format fallback.")
         return f"best[height<={height}]/best"
+
+    def _configure_audio_options(
+        self,
+        options: dict,
+        item: SelectedDownloadItem,
+    ) -> None:
+        if not self._ffmpeg_available():
+            raise RuntimeError("Audio extraction requires FFmpeg on the server.")
+
+        codec = self._audio_codec(item)
+        postprocessor = {
+            "key": "FFmpegExtractAudio",
+            "preferredcodec": codec,
+        }
+        if codec == "mp3":
+            postprocessor["preferredquality"] = "192"
+        options["postprocessors"] = [postprocessor]
+        options["keepvideo"] = False
+
+    def _is_audio_item(self, item: SelectedDownloadItem) -> bool:
+        return self._item_type(item) == "audio" or self._format_id(item) in {"mp3", "m4a"}
+
+    def _format_id(self, item: SelectedDownloadItem) -> str:
+        return (item.formatId or "").strip().lower()
+
+    def _item_type(self, item: SelectedDownloadItem) -> str:
+        return (item.type or "").strip().lower()
+
+    def _audio_codec(self, item: SelectedDownloadItem) -> str:
+        return "m4a" if self._format_id(item) == "m4a" else "mp3"
+
+    def _validated_audio_outputs(
+        self,
+        job_dir: Path,
+        item: SelectedDownloadItem,
+        new_files: list[Path],
+    ) -> list[Path]:
+        codec = self._audio_codec(item)
+        expected_suffix = f".{codec}"
+        expected_name = f"{codec}{expected_suffix}"
+        candidates = [path for path in new_files if path.is_file()]
+        candidates.extend(
+            path
+            for path in job_dir.glob(f"{codec}.*")
+            if path.is_file() and path not in candidates
+        )
+        converted_files = [
+            path
+            for path in candidates
+            if path.name.lower() == expected_name or path.suffix.lower() == expected_suffix
+        ]
+        converted_files = [path for path in converted_files if path.stat().st_size > 0]
+        if converted_files:
+            return converted_files
+
+        wrong_container = [
+            path.name
+            for path in candidates
+            if path.suffix.lower() in {".mp4", ".mov", ".webm", ".mkv"}
+        ]
+        if wrong_container:
+            logger.error(
+                "Audio conversion produced original media container instead of %s. files=%s",
+                expected_name,
+                wrong_container,
+            )
+        raise RuntimeError("Audio conversion failed. FFmpeg may be missing on the server.")
+
+    def _ffmpeg_available(self) -> bool:
+        ffmpeg_path = shutil.which("ffmpeg")
+        ffprobe_path = shutil.which("ffprobe")
+        logger.info(
+            "Audio extraction tool availability. ffmpeg=%s ffprobe=%s",
+            bool(ffmpeg_path),
+            bool(ffprobe_path),
+        )
+        return bool(ffmpeg_path)
 
     def _progress_hook(self, job: DownloadJob, base_progress: int):
         def hook(data: dict) -> None:
@@ -306,15 +449,39 @@ class DownloadService:
         with self._lock:
             return self._jobs.get(job_id)
 
-    def _instagram_cookiefile_if_needed(self, url: str) -> str | None:
-        if detect_platform(url) != "Instagram":
-            return None
-        return self._analyze_service._instagram_cookiefile()
+    def _cookiefile_if_needed(self, url: str) -> str | None:
+        platform = detect_platform(url)
+        if platform == "Instagram":
+            return self._analyze_service._instagram_cookiefile()
+        if platform == "YouTube Shorts":
+            return self._analyze_service._youtube_cookiefile()
+        return None
 
     def _download_url(self, url: str) -> str:
         if detect_platform(url) == "Instagram":
             return self._analyze_service._clean_instagram_url(url)
         return url
+
+    def _should_try_image_html_fallback(self, url: str, exc: Exception) -> bool:
+        platform = detect_platform(url)
+        parsed = urlparse(self._download_url(url))
+        message = self._safe_error(exc).lower()
+        if platform == "Instagram":
+            if not parsed.path.startswith("/p/"):
+                return False
+            return (
+                "no video formats found" in message
+                or "yt-dlp metadata failed" in message
+                or "instagram" in message
+            )
+        if platform == "X/Twitter":
+            return (
+                "no video could be found" in message
+                or "no video found" in message
+                or "yt-dlp metadata failed" in message
+                or "twitter" in message
+            )
+        return False
 
     def _sanitize_filename(self, value: str) -> str:
         name = Path(value).name
@@ -323,10 +490,60 @@ class DownloadService:
         return name or "apexload_file"
 
     def _extension_from_url(self, url: str) -> str | None:
-        suffix = Path(url.split("?")[0]).suffix.lower().lstrip(".")
+        parsed = urlparse(url)
+        query = parse_qs(parsed.query)
+        for key in ("format", "fm"):
+            value = query.get(key, [""])[0].lower()
+            if value in {"jpg", "jpeg", "png", "webp"}:
+                return value
+        suffix = Path(parsed.path).suffix.lower().lstrip(".")
         if suffix in {"jpg", "jpeg", "png", "webp"}:
             return suffix
         return None
+
+    def _download_image_url(self, image_url: str, output_base: Path) -> Path:
+        referer = (
+            "https://x.com/"
+            if "twimg.com" in image_url.lower()
+            else "https://www.instagram.com/"
+        )
+        request = Request(
+            image_url,
+            headers={
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/120.0.0.0 Safari/537.36"
+                ),
+                "Referer": referer,
+                "Accept": "image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+            },
+        )
+        with urlopen(request, timeout=30) as response:
+            status = getattr(response, "status", 200)
+            if status != 200:
+                raise RuntimeError("Could not download image bytes.")
+            content_type = response.headers.get("content-type", "")
+            url_ext = self._extension_from_url(image_url)
+            content_ext = self._extension_from_content_type(content_type)
+            if not content_type.lower().startswith("image/") and not url_ext:
+                raise RuntimeError("Could not download image bytes.")
+            ext = url_ext or content_ext or "jpg"
+            output_path = output_base.with_suffix(f".{ext}")
+            image_bytes = response.read()
+            if len(image_bytes) < MIN_IMAGE_BYTES:
+                raise RuntimeError("Could not find a downloadable image for this post.")
+            output_path.write_bytes(image_bytes)
+            return output_path
+
+    def _extension_from_content_type(self, content_type: str) -> str | None:
+        value = content_type.lower().split(";")[0].strip()
+        return {
+            "image/jpeg": "jpg",
+            "image/jpg": "jpg",
+            "image/png": "png",
+            "image/webp": "webp",
+        }.get(value)
 
     def _image_extension(self, item: SelectedDownloadItem) -> str:
         if item.formatId == "png":
@@ -344,8 +561,53 @@ class DownloadService:
         return f"{size} B"
 
     def _safe_error(self, exc: Exception) -> str:
-        message = " ".join(str(exc).split())
+        raw_message = str(exc)
+        raw_message = re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", raw_message)
+        message = " ".join(raw_message.split())
         return message[:240] or "Download failed"
+
+    def _download_error_message(
+        self,
+        url: str,
+        exc: Exception,
+        item: SelectedDownloadItem | None = None,
+    ) -> str:
+        message = self._safe_error(exc)
+        if item and self._is_audio_item(item):
+            if "requested format is not available" in message.lower():
+                return "Audio source is not available for this link."
+            if "ffmpeg" in message.lower():
+                return "Audio extraction requires ffmpeg on the server."
+        if detect_platform(url) == "Instagram" and self._is_instagram_blocked_error(
+            message
+        ):
+            return "Instagram blocked this request. Please refresh Instagram cookies and try again."
+        if detect_platform(url) == "YouTube Shorts" and (
+            "sign in to confirm" in message.lower() or "not a bot" in message.lower()
+        ):
+            return (
+                "YouTube requested sign-in verification. Please try another "
+                "link or configure YouTube cookies."
+            )
+        return f"yt-dlp download failed: {message}"
+
+    def _is_instagram_blocked_error(self, message: str) -> bool:
+        text = message.lower()
+        return any(
+            marker in text
+            for marker in (
+                "login required",
+                "rate-limit",
+                "rate limit",
+                "requested content is not available",
+                "content is not available",
+                "cookies",
+                "cookie",
+                "empty media response",
+                "api is not granting access",
+                "please wait a few minutes",
+            )
+        )
 
 
 download_service = DownloadService()

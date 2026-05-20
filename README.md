@@ -246,6 +246,43 @@ File:
 Open http://127.0.0.1:8000/api/file/FILE_ID
 ```
 
+## Version 1.3.1 Manual Download Tests
+
+Use the same start-download shape and replace the `url` / `selectedItems` values
+for each case:
+
+- YouTube video: `{"formatId":"480p","type":"video"}`
+- YouTube MP3: `{"formatId":"mp3","type":"audio"}`
+- Instagram Reel video: `{"formatId":"480p","type":"video"}`
+- Instagram image/photo: `{"formatId":"original","type":"image"}`
+- Instagram video + MP3: include both `480p` video and `mp3` audio items.
+- TikTok video: `{"formatId":"480p","type":"video"}`
+- TikTok MP3: `{"formatId":"mp3","type":"audio"}`
+- X/Twitter video: `{"formatId":"480p","type":"video"}`
+- X/Twitter image: `{"formatId":"original","type":"image"}`
+- Snapchat video: `{"formatId":"480p","type":"video"}`
+
+If YouTube returns sign-in or bot verification, configure optional YouTube
+cookies:
+
+```env
+ENABLE_YOUTUBE_COOKIES=true
+YOUTUBE_COOKIES_FILE=/app/secrets/youtube_cookies.txt
+```
+
+Audio notes: if `ffmpeg` is installed, MP3/M4A extraction uses yt-dlp audio
+post-processing with `bestaudio/best`, so platforms that only expose muxed
+media can still produce audio files. Without `ffmpeg`, audio jobs fail with a
+clear message: `Audio extraction requires ffmpeg on the server.` The production
+Docker image installs `ffmpeg`; local Windows testing requires `ffmpeg` and
+`ffprobe` to be installed and available in `PATH`.
+
+TikTok MP3 local test:
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/download -H "Content-Type: application/json" -d "{\"url\":\"https://www.tiktok.com/@mdnazmulhossain20/video/7610596505984011527\",\"selectedItems\":[{\"formatId\":\"mp3\",\"type\":\"audio\"}],\"premium\":false,\"noWatermark\":false}"
+```
+
 ## Version 1.2C Notes
 
 - `POST /api/analyze` uses `yt-dlp` with `download=False`.

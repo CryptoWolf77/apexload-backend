@@ -9,7 +9,7 @@ settings = get_settings()
 app = FastAPI(
     title=settings.app_name,
     version=settings.app_version,
-    description="ApexLoad Version 1.2C backend with real yt-dlp analyze and download jobs.",
+    description="ApexLoad Version 1.3.1 backend with real yt-dlp analyze and download fixes.",
 )
 
 app.add_middleware(
