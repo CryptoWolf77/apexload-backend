@@ -1,6 +1,8 @@
 import logging
 import re
 import shutil
+import subprocess
+import sys
 import threading
 import uuid
 from pathlib import Path
@@ -193,6 +195,17 @@ class DownloadService:
         )
         output_template = str(job_dir / f"{output_name}.%(ext)s")
         platform = detect_platform(job.request.url)
+        if platform == "Instagram":
+            self._download_instagram_with_cli(
+                job,
+                item,
+                job_dir,
+                download_url,
+                output_template,
+                item_type,
+            )
+            return
+
         options = {
             "outtmpl": output_template,
             "format": self._format_selector(item, platform),
@@ -342,6 +355,109 @@ class DownloadService:
             return f"bestvideo[height<={height}]+bestaudio/best[height<={height}]/best"
         logger.info("ffmpeg not found. Using single-file format fallback.")
         return f"best[height<={height}]/best"
+
+    def _download_instagram_with_cli(
+        self,
+        job: DownloadJob,
+        item: SelectedDownloadItem,
+        job_dir: Path,
+        download_url: str,
+        output_template: str,
+        item_type: str,
+    ) -> None:
+        cookiefile = configured_instagram_cookiefile()
+        if not cookiefile:
+            raise RuntimeError(
+                "Instagram download auth misconfigured: cookiefile missing from yt-dlp options."
+            )
+
+        is_audio_item = self._is_audio_item(item)
+        cli_format = self._instagram_cli_format_selector(item)
+        command = [
+            sys.executable,
+            "-m",
+            "yt_dlp",
+            "--cookies",
+            cookiefile,
+            "--impersonate",
+            "chrome",
+            "-f",
+            cli_format,
+        ]
+        if is_audio_item:
+            command.extend(["-x", "--audio-format", self._audio_codec(item)])
+        command.extend(["-o", output_template, download_url])
+
+        logger.info(
+            "Instagram CLI download: platform=Instagram mode=subprocess "
+            "impersonate=chrome hasCookiefile=%s format=%s outputTemplate=%s",
+            bool(cookiefile),
+            cli_format,
+            output_template,
+        )
+        self._ensure_instagram_download_auth(
+            job.request.url,
+            item,
+            {"cookiefile": cookiefile},
+        )
+
+        before = set(job_dir.iterdir())
+        try:
+            result = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                timeout=600,
+                check=False,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError("Instagram download timed out.") from exc
+
+        if result.returncode != 0:
+            error = result.stderr or result.stdout or "Instagram download failed."
+            raise RuntimeError(self._download_error_message(job.request.url, RuntimeError(error), item))
+
+        after = set(job_dir.iterdir())
+        new_files = [
+            path
+            for path in after - before
+            if path.is_file() and path.suffix.lower() not in {".part", ".ytdl"}
+        ]
+        output_name = self._audio_codec(item) if is_audio_item else self._format_id(item)
+        if not new_files:
+            new_files = sorted(job_dir.glob(f"{output_name}.*"))
+        if is_audio_item:
+            new_files = self._validated_audio_outputs(job_dir, item, new_files)
+        else:
+            new_files = self._validated_media_outputs(new_files)
+        for path in new_files:
+            self._register_file(job, path, "audio" if is_audio_item else item_type)
+
+    def _instagram_cli_format_selector(self, item: SelectedDownloadItem) -> str:
+        if self._is_audio_item(item):
+            return "bestaudio/best"
+        height_map = {
+            "480p": 480,
+            "720p": 720,
+            "1080p": 1080,
+            "2160p": 2160,
+        }
+        height = height_map.get(self._format_id(item))
+        if not height:
+            return "best"
+        return f"bestvideo[height<={height}]+bestaudio/best[height<={height}]/best"
+
+    def _validated_media_outputs(self, files: list[Path]) -> list[Path]:
+        valid_files = [
+            path
+            for path in files
+            if path.is_file()
+            and path.stat().st_size >= MIN_IMAGE_BYTES
+            and path.suffix.lower() not in {".part", ".ytdl"}
+        ]
+        if not valid_files:
+            raise RuntimeError("Instagram download did not produce a valid media file.")
+        return valid_files
 
     def _configure_audio_options(
         self,
