@@ -366,6 +366,7 @@ class DownloadService:
         item_type: str,
     ) -> None:
         cookiefile = configured_instagram_cookiefile()
+        cookie_file_exists = bool(cookiefile and Path(cookiefile).is_file())
         if not cookiefile:
             raise RuntimeError(
                 "Instagram download auth misconfigured: cookiefile missing from yt-dlp options."
@@ -389,16 +390,13 @@ class DownloadService:
         command.extend(["-o", output_template, download_url])
 
         logger.info(
-            "Instagram CLI download: platform=Instagram mode=subprocess "
-            "impersonate=chrome hasCookiefile=%s format=%s outputTemplate=%s",
-            bool(cookiefile),
-            cli_format,
+            "Instagram CLI download start: job_id=%s type=%s formatId=%s "
+            "cookieFileExists=%s impersonate=chrome outputTemplate=%s",
+            job.job_id,
+            item_type,
+            self._format_id(item),
+            cookie_file_exists,
             output_template,
-        )
-        self._ensure_instagram_download_auth(
-            job.request.url,
-            item,
-            {"cookiefile": cookiefile},
         )
 
         before = set(job_dir.iterdir())
@@ -415,7 +413,12 @@ class DownloadService:
 
         if result.returncode != 0:
             error = result.stderr or result.stdout or "Instagram download failed."
-            raise RuntimeError(self._download_error_message(job.request.url, RuntimeError(error), item))
+            logger.error(
+                "Instagram CLI download failed: returnCode=%s stderr=%s",
+                result.returncode,
+                error[-1500:],
+            )
+            raise RuntimeError("Instagram CLI download failed.")
 
         after = set(job_dir.iterdir())
         new_files = [
