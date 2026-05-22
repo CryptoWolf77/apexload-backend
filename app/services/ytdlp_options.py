@@ -38,6 +38,7 @@ def build_ytdlp_options(
 
     if platform == "Instagram":
         options.update(_instagram_auth_options())
+        options["impersonate"] = "chrome"
 
     if extra_opts:
         options.update(extra_opts)

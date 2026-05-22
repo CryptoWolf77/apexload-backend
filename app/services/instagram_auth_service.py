@@ -141,6 +141,9 @@ def ytdlp_auth_debug_status() -> dict[str, Any]:
         "ffmpegFound": shutil.which("ffmpeg") is not None,
         "ffprobeFound": shutil.which("ffprobe") is not None,
         "instagramAuthMode": settings.instagram_auth_mode,
+        "impersonate": "chrome"
+        if (settings.instagram_auth_mode or "").lower() in {"cookiefile", "browser"}
+        else None,
         "cookieFileExists": status["cookieFileExists"],
         "cookieFileLooksValid": status["cookieFileLooksValid"],
         "cookiesFromBrowserEnabled": settings.ytdlp_cookies_from_browser_enable,
