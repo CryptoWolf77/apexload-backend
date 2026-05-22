@@ -38,7 +38,9 @@ def build_ytdlp_options(
 
     if platform == "Instagram":
         options.update(_instagram_auth_options())
-        options["impersonate"] = "chrome"
+        impersonate_target = build_impersonate_target("chrome")
+        if impersonate_target is not None:
+            options["impersonate"] = impersonate_target
 
     if extra_opts:
         options.update(extra_opts)
@@ -81,3 +83,17 @@ def configured_instagram_cookiefile() -> str | None:
     cookie_path = instagram_cookie_path()
     valid, _reason = validate_instagram_cookie_file(cookie_path)
     return str(cookie_path) if valid else None
+
+
+def build_impersonate_target(value: str):
+    if not value:
+        return None
+    try:
+        from yt_dlp.networking.impersonate import ImpersonateTarget
+    except Exception:
+        logger.info("yt-dlp ImpersonateTarget is unavailable.")
+        return None
+
+    if hasattr(ImpersonateTarget, "from_str"):
+        return ImpersonateTarget.from_str(value)
+    return ImpersonateTarget(client=value)
