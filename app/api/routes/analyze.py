@@ -37,12 +37,6 @@ async def analyze_link(
             message=exc.message,
         )
     except InstagramAuthRequiredError as exc:
-        if settings.use_mock_analyze_fallback:
-            logger.info("Using mock analyze fallback after Instagram auth/block response")
-            response = mock_service.analyze(payload.url)
-            response.error = exc.error
-            response.message = exc.message
-            return response
         return AnalyzeResponse(
             success=False,
             source="yt_dlp",

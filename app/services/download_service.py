@@ -14,7 +14,15 @@ from app.models.download_models import (
     DownloadStatusResponse,
     SelectedDownloadItem,
 )
-from app.services.ytdlp_analyze_service import YtDlpAnalyzeService
+from app.services.instagram_auth_service import InstagramAuthError
+from app.services.ytdlp_analyze_service import (
+    INSTAGRAM_PHOTO_UNAVAILABLE_MESSAGE,
+    YtDlpAnalyzeService,
+)
+from app.services.ytdlp_options import (
+    build_ytdlp_options,
+    configured_instagram_cookiefile,
+)
 from app.utils.platform_detector import detect_platform
 
 logger = logging.getLogger("apexload.download")
@@ -182,20 +190,22 @@ class DownloadService:
         )
         output_template = str(job_dir / f"{output_name}.%(ext)s")
         options = {
-            "quiet": True,
-            "no_warnings": True,
             "outtmpl": output_template,
             "format": self._format_selector(item),
             "progress_hooks": [self._progress_hook(job, base_progress)],
-            "restrictfilenames": True,
-            "noplaylist": True,
         }
+        try:
+            options = build_ytdlp_options(
+                detect_platform(job.request.url),
+                "download",
+                options,
+            )
+        except InstagramAuthError as exc:
+            raise RuntimeError(
+                self._download_error_message(job.request.url, exc, item)
+            ) from exc
         if is_audio_item:
             self._configure_audio_options(options, item)
-
-        cookiefile = self._cookiefile_if_needed(job.request.url)
-        if cookiefile:
-            options["cookiefile"] = cookiefile
 
         try:
             import yt_dlp
@@ -204,6 +214,10 @@ class DownloadService:
             with yt_dlp.YoutubeDL(options) as ydl:
                 ydl.download([download_url])
             after = set(job_dir.iterdir())
+        except InstagramAuthError as exc:
+            raise RuntimeError(
+                self._download_error_message(job.request.url, exc, item)
+            ) from exc
         except Exception as exc:
             raise RuntimeError(
                 self._download_error_message(job.request.url, exc, item)
@@ -234,16 +248,31 @@ class DownloadService:
         image_url = None
         if info:
             media_info = self._analyze_service._select_media_info(info)
-            image_url, source = self._analyze_service.extract_best_image_url_with_source(
-                media_info
-            )
+            if detect_platform(job.request.url) == "Instagram":
+                photo_debug = self._analyze_service.debug_instagram_photo_extraction(
+                    self._download_url(job.request.url),
+                    info,
+                    configured_instagram_cookiefile(),
+                )
+                image_url = (
+                    photo_debug["bestImageUrl"]
+                    if isinstance(photo_debug.get("bestImageUrl"), str)
+                    else None
+                )
+                source = str(photo_debug.get("bestImageSource") or "instagram_photo")
+            else:
+                image_url, source = (
+                    self._analyze_service.extract_best_image_url_with_source(
+                        media_info
+                    )
+                )
             if image_url:
                 logger.info("Instagram image extraction source: %s", source)
 
         if not image_url and detect_platform(job.request.url) == "Instagram":
             image_url = self._analyze_service.extract_instagram_image_from_html(
                 self._download_url(job.request.url),
-                self._cookiefile_if_needed(job.request.url),
+                configured_instagram_cookiefile(),
             )
         if not image_url and detect_platform(job.request.url) == "X/Twitter":
             image_url = self._analyze_service.extract_x_image_from_html_or_metadata(
@@ -253,8 +282,7 @@ class DownloadService:
             if detect_platform(job.request.url) == "X/Twitter":
                 raise RuntimeError("Could not find a downloadable image for this X post.")
             raise RuntimeError(
-                "Could not find a downloadable image for this post. "
-                "Try refreshing Instagram cookies."
+                INSTAGRAM_PHOTO_UNAVAILABLE_MESSAGE
             )
 
         output_base = job_dir / self._sanitize_filename(item.formatId)
@@ -263,19 +291,21 @@ class DownloadService:
 
     def _extract_info(self, url: str) -> dict:
         options = {
-            "quiet": True,
-            "no_warnings": True,
             "skip_download": True,
-            "noplaylist": True,
         }
-        cookiefile = self._cookiefile_if_needed(url)
-        if cookiefile:
-            options["cookiefile"] = cookiefile
         try:
             import yt_dlp
 
+            options = build_ytdlp_options(
+                detect_platform(url),
+                "metadata",
+                options,
+            )
+
             with yt_dlp.YoutubeDL(options) as ydl:
                 info = ydl.extract_info(self._download_url(url), download=False)
+        except InstagramAuthError as exc:
+            raise RuntimeError(f"yt-dlp metadata failed: {self._safe_error(exc)}") from exc
         except Exception as exc:
             raise RuntimeError(f"yt-dlp metadata failed: {self._safe_error(exc)}") from exc
         if not isinstance(info, dict):
@@ -449,14 +479,6 @@ class DownloadService:
         with self._lock:
             return self._jobs.get(job_id)
 
-    def _cookiefile_if_needed(self, url: str) -> str | None:
-        platform = detect_platform(url)
-        if platform == "Instagram":
-            return self._analyze_service._instagram_cookiefile()
-        if platform == "YouTube Shorts":
-            return self._analyze_service._youtube_cookiefile()
-        return None
-
     def _download_url(self, url: str) -> str:
         if detect_platform(url) == "Instagram":
             return self._analyze_service._clean_instagram_url(url)
@@ -581,7 +603,10 @@ class DownloadService:
         if detect_platform(url) == "Instagram" and self._is_instagram_blocked_error(
             message
         ):
-            return "Instagram blocked this request. Please refresh Instagram cookies and try again."
+            return (
+                "Instagram requires a valid server-side session. Please refresh "
+                "Instagram cookies from the admin panel."
+            )
         if detect_platform(url) == "YouTube Shorts" and (
             "sign in to confirm" in message.lower() or "not a bot" in message.lower()
         ):
@@ -606,6 +631,14 @@ class DownloadService:
                 "empty media response",
                 "api is not granting access",
                 "please wait a few minutes",
+                "unable to extract",
+                "http error 401",
+                "http error 403",
+                "checkpoint",
+                "challenge",
+                "server-side session",
+                "cookie file is missing",
+                "browser cookies are disabled",
             )
         )
 

@@ -81,41 +81,40 @@ If `USE_MOCK_ANALYZE_FALLBACK=true`, supported public links that `yt-dlp` cannot
 analyze fall back to demo data with `"source": "mock_fallback"`. Unsupported or
 unsafe URLs return a clean error.
 
-### Instagram Cookies Support
+### Instagram Auth Support
 
 Instagram may block public metadata extraction without authentication, sometimes
 returning empty media, login-required, or cookie-required responses. ApexLoad
-supports optional server-side Instagram cookies for public content analysis only.
+supports a production cookie file mode and a local browser-cookie mode for
+public content analysis only.
 
 Do not ask app users for Instagram login, do not collect credentials, and do not
 commit cookies to GitHub.
 
-Local/server configuration:
+Production Coolify configuration:
 
 ```env
-ENABLE_INSTAGRAM_COOKIES=true
-INSTAGRAM_COOKIES_FILE=/app/secrets/instagram_cookies.txt
+INSTAGRAM_AUTH_MODE=cookiefile
+INSTAGRAM_COOKIE_FILE=/app/secrets/instagram_cookies.txt
+ADMIN_API_KEY=<strong-secret-key>
 ```
 
-Put the Netscape-format cookie file at the configured path on the server. The
-Docker image creates `/app/secrets`, but it does not copy real cookies into the
-image. In Coolify, mount or create the cookie file as a secret/volume and set the
-two environment variables above.
+Local development configuration:
 
-If Instagram analysis fails without cookies, the backend logs:
-
-```text
-Instagram analyze failed without cookies. Retrying with cookies if enabled.
+```env
+INSTAGRAM_AUTH_MODE=browser
+YTDLP_COOKIES_FROM_BROWSER_ENABLE=true
+YTDLP_COOKIES_BROWSER=chrome
 ```
 
-Successful no-cookie responses use `"source": "yt_dlp"`. Successful cookie retry
-responses use `"source": "yt_dlp_cookies"`. Fallback responses use
-`"source": "mock_fallback"`.
+Put the Netscape-format cookie file in Coolify persistent storage at
+`/app/secrets/instagram_cookies.txt`, or upload it through the internal admin
+API/page. The Docker image creates `/app/secrets`, but it does not copy real
+cookies into the image.
 
-For Instagram, the backend tries several safe `yt-dlp` analyze configurations:
-no cookies, cookies, cookies with the default Instagram web `app_id`, and cookies
-with `app_id` plus browser-like headers. Instagram may still reject `yt-dlp` even
-with valid cookies, so reliability cannot be guaranteed.
+Successful cookiefile responses use `"source": "yt_dlp_cookies"`. Browser-cookie
+development responses use `"source": "yt_dlp_browser"`. Instagram may still
+reject `yt-dlp` even with valid cookies, so reliability cannot be guaranteed.
 
 Using Instagram cookies may risk account restrictions. Use responsibly and only
 for public content you are allowed to access.
@@ -255,7 +254,8 @@ for each case:
 - YouTube MP3: `{"formatId":"mp3","type":"audio"}`
 - Instagram Reel video: `{"formatId":"480p","type":"video"}`
 - Instagram image/photo: `{"formatId":"original","type":"image"}`
-- Instagram video + MP3: include both `480p` video and `mp3` audio items.
+- Instagram video and Instagram MP3 should be requested separately. The API now
+  accepts one selected item per request.
 - TikTok video: `{"formatId":"480p","type":"video"}`
 - TikTok MP3: `{"formatId":"mp3","type":"audio"}`
 - X/Twitter video: `{"formatId":"480p","type":"video"}`
@@ -308,3 +308,75 @@ curl -X POST http://127.0.0.1:8000/api/download -H "Content-Type: application/js
 - Move jobs/file registry to Redis/database.
 - Add cleanup for old files.
 - Add API key enforcement or a production auth strategy.
+
+## Version 1.3.2 Instagram Auth Operations
+
+ApexLoad now uses a central yt-dlp options helper for Instagram auth. Do not
+commit cookies to GitHub and do not copy real cookies into the Docker image.
+
+Production Coolify env:
+
+```env
+INSTAGRAM_AUTH_MODE=cookiefile
+INSTAGRAM_COOKIE_FILE=/app/secrets/instagram_cookies.txt
+ADMIN_API_KEY=<strong-secret-key>
+YTDLP_UPDATE_POLICY=manual
+```
+
+Coolify setup:
+
+1. Add persistent storage mounted at `/app/secrets`.
+2. Set the env vars above.
+3. Redeploy the backend image.
+4. Open `/admin/instagram`, enter the admin key, upload a Netscape cookie file,
+   and validate it.
+5. Test Instagram analyze and download again.
+
+Local development can use browser cookies instead of a server cookie file:
+
+```env
+INSTAGRAM_AUTH_MODE=browser
+YTDLP_COOKIES_FROM_BROWSER_ENABLE=true
+YTDLP_COOKIES_BROWSER=chrome
+YTDLP_COOKIES_BROWSER_PROFILE=
+YTDLP_COOKIES_BROWSER_KEYRING=
+```
+
+Internal admin API:
+
+```bash
+curl -H "X-Admin-Key: YOUR_KEY" http://127.0.0.1:8000/api/admin/instagram/auth-status
+
+curl -X POST http://127.0.0.1:8000/api/admin/instagram/upload-cookies \
+  -H "X-Admin-Key: YOUR_KEY" \
+  -H "Content-Type: application/json" \
+  -d "{\"cookiesText\":\"# Netscape HTTP Cookie File...\"}"
+
+curl -X POST http://127.0.0.1:8000/api/admin/instagram/validate-cookies \
+  -H "X-Admin-Key: YOUR_KEY" \
+  -H "Content-Type: application/json" \
+  -d "{\"testUrl\":\"https://www.instagram.com/reel/DYcGKp2hwA1/\"}"
+
+curl -X DELETE -H "X-Admin-Key: YOUR_KEY" http://127.0.0.1:8000/api/admin/instagram/cookies
+```
+
+Debug auth status:
+
+```bash
+curl http://127.0.0.1:8000/api/debug/ytdlp-auth
+```
+
+Download API behavior changed in Version 1.3.2: only one selected item is
+accepted per request. Requests with multiple `selectedItems` return:
+`Only one download option can be selected per request.`
+
+If Instagram breaks:
+
+1. Refresh Instagram cookies from the admin panel.
+2. Update `yt-dlp`.
+3. Redeploy the backend.
+4. Validate with `/api/admin/instagram/validate-cookies`.
+
+Instagram may still reject yt-dlp even with valid cookies. The backend returns a
+safe message asking for a refreshed server-side session rather than exposing raw
+yt-dlp output.

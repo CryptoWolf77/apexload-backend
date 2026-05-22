@@ -9,6 +9,7 @@ from app.services.ytdlp_analyze_service import (
     UnsupportedUrlError,
     YtDlpAnalyzeService,
 )
+from app.services.instagram_auth_service import ytdlp_auth_debug_status
 
 router = APIRouter(tags=["debug"])
 instagram_service = YtDlpAnalyzeService()
@@ -23,12 +24,20 @@ async def config_debug() -> dict[str, bool | str]:
     # TODO: Remove or protect debug endpoints before production release.
     settings = get_settings()
     return {
+        "instagramAuthMode": settings.instagram_auth_mode,
         "enableInstagramCookies": settings.enable_instagram_cookies,
         "enableYoutubeCookies": settings.enable_youtube_cookies,
         "useMockAnalyzeFallback": settings.use_mock_analyze_fallback,
-        "instagramCookiesFile": settings.instagram_cookies_file,
+        "instagramCookieFile": settings.instagram_cookie_file,
         "youtubeCookiesFile": settings.youtube_cookies_file,
     }
+
+
+@router.get("/ytdlp-auth")
+async def ytdlp_auth_debug() -> dict[str, bool | str]:
+    # TODO: Protect debug endpoints before production release if public metadata
+    # becomes sensitive.
+    return {"success": True, **ytdlp_auth_debug_status()}
 
 
 @router.get("/instagram-cookies")
@@ -76,6 +85,24 @@ async def instagram_image_debug(
         "foundCdnUrlsCount": debug["foundCdnUrlsCount"],
         "rejectedStaticAssetsCount": debug["rejectedStaticAssetsCount"],
         "rejectedSmallImagesCount": debug["rejectedSmallImagesCount"],
+        "acceptedCandidateSize": debug["acceptedCandidateSize"],
+        "bestImageUrlMasked": debug["bestImageUrlMasked"],
+        "reason": debug["reason"],
+    }
+
+
+@router.get("/instagram-photo")
+async def instagram_photo_debug(
+    url: str,
+) -> dict[str, bool | int | str | None]:
+    # TODO: Remove or protect debug endpoints before production release.
+    debug = instagram_service.debug_instagram_photo_extraction(url)
+    return {
+        "success": debug["success"],
+        "mediaType": debug["mediaType"],
+        "foundCandidateCount": debug["foundCandidateCount"],
+        "rejectedStaticCount": debug["rejectedStaticCount"],
+        "rejectedSmallCount": debug["rejectedSmallCount"],
         "acceptedCandidateSize": debug["acceptedCandidateSize"],
         "bestImageUrlMasked": debug["bestImageUrlMasked"],
         "reason": debug["reason"],

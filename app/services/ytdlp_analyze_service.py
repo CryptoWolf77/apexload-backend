@@ -9,6 +9,14 @@ from urllib.request import Request, urlopen
 
 from app.core.config import get_settings
 from app.models.analyze_models import AnalyzeResponse, FormatOption
+from app.services.instagram_auth_service import (
+    InstagramAuthError,
+    get_instagram_auth_status,
+)
+from app.services.ytdlp_options import (
+    build_ytdlp_options,
+    configured_instagram_cookiefile,
+)
 from app.utils.platform_detector import detect_platform
 
 logger = logging.getLogger("apexload.analyze")
@@ -43,6 +51,9 @@ INSTAGRAM_BROWSER_HEADERS = {
 }
 MIN_INSTAGRAM_POST_IMAGE_BYTES = 10 * 1024
 MIN_POST_IMAGE_BYTES = 10 * 1024
+INSTAGRAM_PHOTO_UNAVAILABLE_MESSAGE = (
+    "Instagram photo posts are not available for this link. Try a Reel/video link."
+)
 X_BROWSER_HEADERS = {
     "User-Agent": INSTAGRAM_BROWSER_HEADERS["User-Agent"],
     "Referer": "https://x.com/",
@@ -68,7 +79,10 @@ class UnsupportedUrlError(AnalyzeServiceError):
 
 class InstagramAuthRequiredError(AnalyzeServiceError):
     error = "instagram_requires_auth"
-    message = "Instagram blocked this request. Try another public link or try again later."
+    message = (
+        "Instagram requires a valid server-side session. Please refresh "
+        "Instagram cookies from the admin panel."
+    )
 
 
 class YouTubeAuthRequiredError(AnalyzeServiceError):
@@ -105,15 +119,22 @@ class YtDlpAnalyzeService:
         logger.info("yt-dlp analyze success. mediaType=%s", media_type)
 
         thumbnail, image_source = self.extract_best_image_url_with_source(media_info)
-        if not thumbnail:
-            thumbnail = self._thumbnail(media_info)
-            image_source = "thumbnail" if thumbnail else "none"
-        if platform == "Instagram" and media_type == "image" and not thumbnail:
-            thumbnail = self.extract_instagram_image_from_html(
+        if platform == "Instagram" and media_type == "image":
+            photo_debug = self.debug_instagram_photo_extraction(
                 normalized_url,
+                info,
                 self._instagram_cookiefile(),
             )
-            image_source = "webpage_html" if thumbnail else image_source
+            candidate = photo_debug.get("bestImageUrl")
+            if isinstance(candidate, str) and candidate:
+                thumbnail = candidate
+                image_source = str(photo_debug.get("bestImageSource") or "instagram_photo")
+            else:
+                thumbnail = ""
+                image_source = str(photo_debug.get("reason") or "none")
+        elif not thumbnail:
+            thumbnail = self._thumbnail(media_info)
+            image_source = "thumbnail" if thumbnail else "none"
         if platform == "X/Twitter" and media_type == "image" and not thumbnail:
             thumbnail = self.extract_x_image_from_html_or_metadata(normalized_url)
             image_source = "x_html" if thumbnail else image_source
@@ -128,12 +149,21 @@ class YtDlpAnalyzeService:
             thumbnail=thumbnail,
             duration=self._duration(media_info) if media_type == "video" else None,
             formats=(
-                self._video_formats(media_info, thumbnail)
+                self._video_formats(media_info, thumbnail, platform)
                 if media_type == "video"
-                else self._image_formats(thumbnail)
+                else self._image_formats(
+                    thumbnail,
+                    unavailable_reason=(
+                        INSTAGRAM_PHOTO_UNAVAILABLE_MESSAGE
+                        if platform == "Instagram" and not thumbnail
+                        else "No image URL found"
+                    ),
+                )
             ),
             message=(
-                "Image detected, but direct image URL was not found."
+                INSTAGRAM_PHOTO_UNAVAILABLE_MESSAGE
+                if platform == "Instagram" and media_type == "image" and not thumbnail
+                else "Image detected, but direct image URL was not found."
                 if media_type == "image" and not thumbnail
                 else None
             ),
@@ -201,28 +231,7 @@ class YtDlpAnalyzeService:
         )
 
     def _instagram_cookiefile(self) -> str | None:
-        settings = get_settings()
-        if not settings.enable_instagram_cookies:
-            logger.info("Instagram cookies disabled. Skipping cookie retry.")
-            return None
-        if not settings.instagram_cookies_file:
-            logger.info("Instagram cookies enabled but cookie file not found: (empty)")
-            return None
-
-        cookie_path = Path(settings.instagram_cookies_file).expanduser().resolve()
-        if not cookie_path.is_file():
-            logger.info(
-                "Instagram cookies enabled but cookie file not found: %s",
-                cookie_path,
-            )
-            return None
-        if not self._cookie_file_looks_valid(cookie_path):
-            logger.info(
-                "Instagram cookies enabled but cookie file is not valid: %s",
-                cookie_path,
-            )
-            return None
-        return str(cookie_path)
+        return configured_instagram_cookiefile()
 
     def _youtube_cookiefile(self) -> str | None:
         settings = get_settings()
@@ -242,48 +251,37 @@ class YtDlpAnalyzeService:
         return str(cookie_path)
 
     def instagram_cookie_status(self) -> dict[str, bool | int | str]:
-        settings = get_settings()
-        raw_path = settings.instagram_cookies_file
-        resolved_path = str(Path(raw_path).expanduser().resolve()) if raw_path else ""
-        cookie_path = Path(resolved_path) if resolved_path else None
-        exists = bool(cookie_path and cookie_path.is_file())
-        size = cookie_path.stat().st_size if cookie_path and exists else 0
-        valid = bool(cookie_path and self._cookie_file_looks_valid(cookie_path))
+        status = get_instagram_auth_status()
         return {
-            "enableInstagramCookies": settings.enable_instagram_cookies,
-            "cookieFileRaw": raw_path,
-            "cookieFileResolved": resolved_path,
-            "cookieFileExists": exists,
-            "cookieFileSize": size,
-            "cookieFileValid": valid,
+            "enableInstagramCookies": status["authMode"] == "cookiefile",
+            "cookieFileRaw": status["cookieFileRaw"],
+            "cookieFileResolved": status["cookieFileResolved"],
+            "cookieFileExists": status["cookieFileExists"],
+            "cookieFileSize": status["cookieFileSize"],
+            "cookieFileValid": status["cookieFileLooksValid"],
         }
 
     def _log_instagram_cookie_settings(self) -> None:
-        settings = get_settings()
-        cookie_path = (
-            Path(settings.instagram_cookies_file).expanduser().resolve()
-            if settings.instagram_cookies_file
-            else None
+        status = get_instagram_auth_status()
+        logger.info(
+            "INSTAGRAM_AUTH_MODE=%s",
+            status["authMode"],
         )
         logger.info(
-            "ENABLE_INSTAGRAM_COOKIES=%s",
-            settings.enable_instagram_cookies,
-        )
-        logger.info(
-            "INSTAGRAM_COOKIES_FILE=%s",
-            settings.instagram_cookies_file,
+            "INSTAGRAM_COOKIE_FILE=%s",
+            status["cookieFileRaw"],
         )
         logger.info(
             "Instagram cookie file resolved path=%s",
-            str(cookie_path) if cookie_path else "",
+            status["cookieFileResolved"],
         )
         logger.info(
             "Instagram cookie file exists=%s",
-            bool(cookie_path and cookie_path.is_file()),
+            status["cookieFileExists"],
         )
         logger.info(
             "Instagram cookie file valid=%s",
-            bool(cookie_path and self._cookie_file_looks_valid(cookie_path)),
+            status["cookieFileLooksValid"],
         )
 
     def _cookie_file_looks_valid(
@@ -324,6 +322,14 @@ class YtDlpAnalyzeService:
             "http error 400",
             "please wait a few minutes",
             "requested content is not available",
+            "unable to extract",
+            "http error 401",
+            "http error 403",
+            "checkpoint",
+            "challenge",
+            "server-side session",
+            "cookie file is missing",
+            "browser cookies are disabled",
         )
         return any(marker in text for marker in blocked_markers)
 
@@ -348,10 +354,10 @@ class YtDlpAnalyzeService:
         status = self.instagram_cookie_status()
         logger.info("BACKEND INSTAGRAM DEBUG:")
         logger.info(
-            "ENABLE_INSTAGRAM_COOKIES=%s",
+            "INSTAGRAM_COOKIEFILE_AUTH=%s",
             status["enableInstagramCookies"],
         )
-        logger.info("INSTAGRAM_COOKIES_FILE=%s", status["cookieFileRaw"])
+        logger.info("INSTAGRAM_COOKIE_FILE=%s", status["cookieFileRaw"])
         logger.info("resolved_cookie_path=%s", status["cookieFileResolved"])
         logger.info("cookie_file_exists=%s", status["cookieFileExists"])
         logger.info("cookie_file_valid=%s", status["cookieFileValid"])
@@ -363,10 +369,10 @@ class YtDlpAnalyzeService:
         if platform != "Instagram":
             raise UnsupportedUrlError()
         clean_url = self._clean_instagram_url(normalized_url)
-        cookiefile = self._instagram_cookiefile()
-        if not cookiefile:
-            raise InstagramAuthRequiredError()
-        return self._extract_instagram_info_with_direct_cookies(clean_url, cookiefile)
+        try:
+            return self._extract_info(clean_url)
+        except InstagramAuthError as exc:
+            raise InstagramAuthRequiredError(raw_message=str(exc)) from exc
 
     def _extract_instagram_info_with_direct_cookies(
         self,
@@ -396,23 +402,33 @@ class YtDlpAnalyzeService:
 
     def _extract_instagram_info(self, url: str) -> tuple[dict, str]:
         self._log_instagram_cookie_settings()
-        cookiefile = self._instagram_cookiefile()
+        settings = get_settings()
+        auth_mode = settings.instagram_auth_mode
+        cookiefile = configured_instagram_cookiefile()
         last_error: AnalyzeServiceError | None = None
-        if cookiefile:
+        if auth_mode in {"cookiefile", "browser"}:
             attempts = (
                 (
-                    "Instagram attempt 1: cookies started",
-                    "yt_dlp_cookies",
-                    "direct_cookies",
+                    f"Instagram attempt 1: {auth_mode} auth started",
+                    "yt_dlp_cookies" if auth_mode == "cookiefile" else "yt_dlp_browser",
+                    {},
                 ),
                 (
-                    "Instagram attempt 2: cookies + app_id started",
-                    "yt_dlp_cookies_app_id",
+                    f"Instagram attempt 2: {auth_mode} auth + app_id started",
+                    (
+                        "yt_dlp_cookies_app_id"
+                        if auth_mode == "cookiefile"
+                        else "yt_dlp_browser_app_id"
+                    ),
                     {"extractor_args": {"instagram": {"app_id": [INSTAGRAM_WEB_APP_ID]}}},
                 ),
                 (
-                    "Instagram attempt 3: cookies + app_id + headers started",
-                    "yt_dlp_cookies_app_id_headers",
+                    f"Instagram attempt 3: {auth_mode} auth + app_id + headers started",
+                    (
+                        "yt_dlp_cookies_app_id_headers"
+                        if auth_mode == "cookiefile"
+                        else "yt_dlp_browser_app_id_headers"
+                    ),
                     {
                         "extractor_args": {
                             "instagram": {"app_id": [INSTAGRAM_WEB_APP_ID]}
@@ -428,19 +444,12 @@ class YtDlpAnalyzeService:
             ):
                 logger.info(log_message)
                 try:
-                    if extra_options == "direct_cookies":
-                        info = self._extract_instagram_info_with_direct_cookies(
-                            url,
-                            cookiefile,
-                        )
-                    else:
-                        info = self._extract_info(
-                            url,
-                            cookiefile=cookiefile,
-                            extra_options=extra_options,
-                        )
+                    info = self._extract_info(url, extra_options=extra_options)
                     logger.info("Instagram attempt %s succeeded", index)
                     return info, source
+                except InstagramAuthError as exc:
+                    logger.info("Instagram auth setup failed: %s", exc)
+                    raise InstagramAuthRequiredError(raw_message=str(exc)) from exc
                 except AnalyzeServiceError as exc:
                     logger.info(
                         "Instagram attempt %s failed: %s",
@@ -520,21 +529,16 @@ class YtDlpAnalyzeService:
         try:
             import yt_dlp
 
-            options = {
-                "quiet": True,
-                "no_warnings": True,
-                "skip_download": True,
-                "download": False,
-                "noplaylist": True,
-                "socket_timeout": 15,
-                "extract_flat": False,
-            }
+            platform = detect_platform(url)
+            options = build_ytdlp_options(platform, "analyze")
             if cookiefile:
                 options["cookiefile"] = cookiefile
             if extra_options:
                 options.update(extra_options)
             with yt_dlp.YoutubeDL(options) as ydl:
                 info = ydl.extract_info(url, download=False)
+        except InstagramAuthError:
+            raise
         except UnsupportedUrlError:
             raise
         except Exception as exc:
@@ -709,6 +713,82 @@ class YtDlpAnalyzeService:
         if reason:
             logger.info("Instagram image extraction failed: %s", reason)
         return None
+
+    def debug_instagram_photo_extraction(
+        self,
+        url: str,
+        info: dict | None = None,
+        cookies_file: str | None = None,
+    ) -> dict[str, bool | int | str | None]:
+        status = self.instagram_cookie_status()
+        cookies_enabled = bool(status["enableInstagramCookies"])
+        cookie_file_exists = bool(status["cookieFileExists"])
+        cookiefile = cookies_file
+        if cookies_enabled and not cookiefile:
+            resolved = str(status["cookieFileResolved"])
+            cookiefile = resolved if resolved and cookie_file_exists else None
+
+        result: dict[str, bool | int | str | None] = {
+            "success": False,
+            "url": url,
+            "mediaType": "image" if self._is_instagram_image_post_url(url) else None,
+            "foundCandidateCount": 0,
+            "rejectedStaticCount": 0,
+            "rejectedSmallCount": 0,
+            "acceptedCandidateSize": None,
+            "bestImageUrl": None,
+            "bestImageUrlMasked": None,
+            "bestImageSource": None,
+            "reason": None,
+        }
+        if not self._is_instagram_image_post_url(url):
+            result["reason"] = "URL is not an Instagram photo post"
+            return result
+
+        candidates: list[tuple[str, str]] = []
+        if info:
+            candidates.extend(self._extract_instagram_metadata_image_candidates(info))
+
+        html_debug = self.debug_instagram_image_extraction(url, cookiefile)
+        html_candidate = html_debug.get("bestImageUrl")
+        if isinstance(html_candidate, str) and html_candidate:
+            candidates.append(
+                (
+                    str(html_debug.get("bestImageSource") or "webpage_html"),
+                    html_candidate,
+                )
+            )
+        elif not candidates and html_debug.get("reason"):
+            result["reason"] = str(html_debug["reason"])
+
+        candidates = self._dedupe_candidates(candidates)
+        result["foundCandidateCount"] = len(candidates)
+        for source, candidate in sorted(
+            candidates,
+            key=lambda item: self._candidate_priority(item[1]),
+            reverse=True,
+        ):
+            if self._is_instagram_static_asset_url(candidate):
+                result["rejectedStaticCount"] = int(result["rejectedStaticCount"] or 0) + 1
+                continue
+            validation = self._validate_image_candidate(candidate)
+            if validation["valid"]:
+                result.update(
+                    {
+                        "success": True,
+                        "bestImageUrl": candidate,
+                        "bestImageUrlMasked": self._mask_url(candidate),
+                        "bestImageSource": source,
+                        "acceptedCandidateSize": validation["size"],
+                        "reason": "Image URL validated",
+                    }
+                )
+                return result
+            if validation["reason"] == "small_image":
+                result["rejectedSmallCount"] = int(result["rejectedSmallCount"] or 0) + 1
+
+        result["reason"] = INSTAGRAM_PHOTO_UNAVAILABLE_MESSAGE
+        return result
 
     def debug_instagram_image_extraction(
         self,
@@ -909,6 +989,57 @@ class YtDlpAnalyzeService:
             unique.append((source, normalized))
         return unique
 
+    def _extract_instagram_metadata_image_candidates(
+        self,
+        info: object,
+    ) -> list[tuple[str, str]]:
+        candidates: list[tuple[str, str]] = []
+        preferred_keys = {
+            "url",
+            "webpage_url",
+            "thumbnail",
+            "display_url",
+            "thumbnail_src",
+            "src",
+        }
+        for path, value in self._walk_values(info):
+            if not isinstance(value, str):
+                continue
+            key = path.rsplit(".", 1)[-1]
+            decoded = self._decode_web_image_url(value)
+            if not decoded.startswith(("http://", "https://")):
+                continue
+            if key in preferred_keys or self._looks_like_instagram_image_media_url(decoded):
+                if self._looks_like_instagram_image_media_url(decoded):
+                    candidates.append((f"metadata:{path}", decoded))
+        return self._dedupe_candidates(candidates)
+
+    def _walk_values(self, value: object, path: str = "info"):
+        if isinstance(value, dict):
+            for key, child in value.items():
+                yield from self._walk_values(child, f"{path}.{key}")
+        elif isinstance(value, list):
+            for index, child in enumerate(value):
+                yield from self._walk_values(child, f"{path}[{index}]")
+        else:
+            yield path, value
+
+    def _dedupe_candidates(
+        self,
+        candidates: list[tuple[str, str]],
+    ) -> list[tuple[str, str]]:
+        unique: list[tuple[str, str]] = []
+        seen: set[str] = set()
+        for source, candidate in candidates:
+            normalized = self._decode_web_image_url(candidate)
+            if not normalized.startswith(("http://", "https://")):
+                continue
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+            unique.append((source, normalized))
+        return unique
+
     def _extract_og_image(self, body: str) -> str | None:
         patterns = (
             r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)["\']',
@@ -1012,6 +1143,21 @@ class YtDlpAnalyzeService:
     def _looks_like_instagram_cdn_url(self, url: str) -> bool:
         lower = url.lower()
         return any(host in lower for host in ("cdninstagram.com", "scontent", "fbcdn"))
+
+    def _looks_like_instagram_image_media_url(self, url: str) -> bool:
+        lower = url.lower()
+        if self._is_instagram_static_asset_url(lower):
+            return False
+        has_instagram_media_host = any(
+            host in lower
+            for host in (
+                "instagram.f",
+                "scontent",
+                "fbcdn.net",
+                "cdninstagram.com",
+            )
+        )
+        return has_instagram_media_host and self._looks_like_image_url(url, "")
 
     def _is_instagram_static_asset_url(self, url: str) -> bool:
         lower = url.lower()
@@ -1358,8 +1504,48 @@ class YtDlpAnalyzeService:
         minutes, secs = divmod(seconds, 60)
         return f"{minutes:02d}:{secs:02d}"
 
-    def _video_formats(self, info: dict, thumbnail: str) -> list[FormatOption]:
+    def _video_formats(
+        self,
+        info: dict,
+        thumbnail: str,
+        platform: str = "",
+    ) -> list[FormatOption]:
         heights = self._available_heights(info)
+        duration = info.get("duration")
+        snapchat_has_downloadable_video = self._has_video_signals(info) or (
+            isinstance(duration, (int, float)) and duration > 0
+        )
+        if platform == "Snapchat" and not heights and snapchat_has_downloadable_video:
+            return [
+                FormatOption(
+                    id="best",
+                    label="MP4 Video",
+                    type="video",
+                    quality="best",
+                    size="Unknown",
+                    premium=False,
+                    available=True,
+                ),
+                FormatOption(
+                    id="mp3",
+                    label="MP3 Audio",
+                    type="audio",
+                    quality="audio",
+                    size="Unknown",
+                    premium=True,
+                    available=True,
+                ),
+                FormatOption(
+                    id="thumbnail",
+                    label="Thumbnail JPG",
+                    type="image",
+                    quality="thumbnail",
+                    size="Unknown" if thumbnail else None,
+                    premium=False,
+                    available=bool(thumbnail),
+                    unavailableReason=None if thumbnail else "Not available on this clip",
+                ),
+            ]
         return [
             self._video_format("480p", "MP4 480p", 480, False, heights),
             self._video_format("720p", "MP4 720p", 720, False, heights),
@@ -1422,7 +1608,11 @@ class YtDlpAnalyzeService:
             unavailableReason=None if available else "Not available on this clip",
         )
 
-    def _image_formats(self, image_url: str | None = None) -> list[FormatOption]:
+    def _image_formats(
+        self,
+        image_url: str | None = None,
+        unavailable_reason: str = "No image URL found",
+    ) -> list[FormatOption]:
         has_image = bool(image_url)
         if not image_url:
             return [
@@ -1434,7 +1624,7 @@ class YtDlpAnalyzeService:
                     size=None,
                     premium=False,
                     available=False,
-                    unavailableReason="No image URL found",
+                    unavailableReason=unavailable_reason,
                 ),
                 FormatOption(
                     id="jpg",
@@ -1444,7 +1634,7 @@ class YtDlpAnalyzeService:
                     size=None,
                     premium=False,
                     available=False,
-                    unavailableReason="No image URL found",
+                    unavailableReason=unavailable_reason,
                 ),
                 FormatOption(
                     id="png",
@@ -1454,7 +1644,7 @@ class YtDlpAnalyzeService:
                     size=None,
                     premium=True,
                     available=False,
-                    unavailableReason="No image URL found",
+                    unavailableReason=unavailable_reason,
                 ),
                 FormatOption(
                     id="webp",
@@ -1464,7 +1654,7 @@ class YtDlpAnalyzeService:
                     size=None,
                     premium=False,
                     available=False,
-                    unavailableReason="No image URL found",
+                    unavailableReason=unavailable_reason,
                 ),
                 FormatOption(
                     id="high_quality",
@@ -1474,7 +1664,7 @@ class YtDlpAnalyzeService:
                     size=None,
                     premium=True,
                     available=False,
-                    unavailableReason="No image URL found",
+                    unavailableReason=unavailable_reason,
                 ),
                 FormatOption(
                     id="compressed",
@@ -1484,7 +1674,7 @@ class YtDlpAnalyzeService:
                     size=None,
                     premium=False,
                     available=False,
-                    unavailableReason="No image URL found",
+                    unavailableReason=unavailable_reason,
                 ),
             ]
 

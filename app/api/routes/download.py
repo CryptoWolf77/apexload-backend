@@ -17,6 +17,13 @@ async def start_download(
     background_tasks: BackgroundTasks,
     _api_key: str | None = Depends(get_optional_api_key),
 ) -> DownloadStartResponse:
+    if len(payload.selectedItems) != 1:
+        return DownloadStartResponse(
+            success=False,
+            jobId="",
+            status="failed",
+            message="Only one download option can be selected per request.",
+        )
     response = download_service.create_job(payload)
     background_tasks.add_task(download_service.process_job, response.jobId)
     return response
