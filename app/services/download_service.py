@@ -14,7 +14,10 @@ from app.models.download_models import (
     DownloadStatusResponse,
     SelectedDownloadItem,
 )
-from app.services.instagram_auth_service import InstagramAuthError
+from app.services.instagram_auth_service import (
+    InstagramAuthError,
+    get_instagram_auth_status,
+)
 from app.services.ytdlp_analyze_service import (
     INSTAGRAM_PHOTO_UNAVAILABLE_MESSAGE,
     YtDlpAnalyzeService,
@@ -189,14 +192,15 @@ class DownloadService:
             else self._sanitize_filename(format_id)
         )
         output_template = str(job_dir / f"{output_name}.%(ext)s")
+        platform = detect_platform(job.request.url)
         options = {
             "outtmpl": output_template,
-            "format": self._format_selector(item),
+            "format": self._format_selector(item, platform),
             "progress_hooks": [self._progress_hook(job, base_progress)],
         }
         try:
             options = build_ytdlp_options(
-                detect_platform(job.request.url),
+                platform,
                 "download",
                 options,
             )
@@ -206,6 +210,8 @@ class DownloadService:
             ) from exc
         if is_audio_item:
             self._configure_audio_options(options, item)
+
+        self._log_instagram_download_auth(job.request.url, item, options)
 
         try:
             import yt_dlp
@@ -312,7 +318,7 @@ class DownloadService:
             raise RuntimeError("yt-dlp returned invalid metadata")
         return info
 
-    def _format_selector(self, item: SelectedDownloadItem) -> str:
+    def _format_selector(self, item: SelectedDownloadItem, platform: str = "") -> str:
         if self._is_audio_item(item):
             return "bestaudio/best"
 
@@ -325,6 +331,12 @@ class DownloadService:
         height = height_map.get(self._format_id(item))
         if not height:
             return "best"
+
+        if platform == "Instagram":
+            return (
+                f"bestvideo[height<={height}]+bestaudio/"
+                f"best[height<={height}]/bestvideo+bestaudio/best"
+            )
 
         if shutil.which("ffmpeg"):
             return f"bestvideo[height<={height}]+bestaudio/best[height<={height}]/best"
@@ -407,6 +419,25 @@ class DownloadService:
             bool(ffprobe_path),
         )
         return bool(ffmpeg_path)
+
+    def _log_instagram_download_auth(
+        self,
+        url: str,
+        item: SelectedDownloadItem,
+        options: dict,
+    ) -> None:
+        if detect_platform(url) != "Instagram":
+            return
+        status = get_instagram_auth_status()
+        logger.info(
+            "Instagram download auth: authMode=%s cookieFileExists=%s "
+            "cookieFileLooksValid=%s selectedFormatId=%s cookiefileInYdlOpts=%s",
+            status["authMode"],
+            status["cookieFileExists"],
+            status["cookieFileLooksValid"],
+            self._format_id(item),
+            bool(options.get("cookiefile")),
+        )
 
     def _progress_hook(self, job: DownloadJob, base_progress: int):
         def hook(data: dict) -> None:
