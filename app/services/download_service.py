@@ -211,7 +211,7 @@ class DownloadService:
         if is_audio_item:
             self._configure_audio_options(options, item)
 
-        self._log_instagram_download_auth(job.request.url, item, options)
+        self._ensure_instagram_download_auth(job.request.url, item, options)
 
         try:
             import yt_dlp
@@ -420,7 +420,7 @@ class DownloadService:
         )
         return bool(ffmpeg_path)
 
-    def _log_instagram_download_auth(
+    def _ensure_instagram_download_auth(
         self,
         url: str,
         item: SelectedDownloadItem,
@@ -429,15 +429,20 @@ class DownloadService:
         if detect_platform(url) != "Instagram":
             return
         status = get_instagram_auth_status()
+        cookiefile_in_options = bool(options.get("cookiefile"))
         logger.info(
             "Instagram download auth: authMode=%s cookieFileExists=%s "
-            "cookieFileLooksValid=%s selectedFormatId=%s cookiefileInYdlOpts=%s",
+            "cookieFileLooksValid=%s cookieFileInYdlOpts=%s selectedFormatId=%s",
             status["authMode"],
             status["cookieFileExists"],
             status["cookieFileLooksValid"],
+            cookiefile_in_options,
             self._format_id(item),
-            bool(options.get("cookiefile")),
         )
+        if status["authMode"] == "cookiefile" and not cookiefile_in_options:
+            raise RuntimeError(
+                "Instagram download auth misconfigured: cookiefile missing from yt-dlp options."
+            )
 
     def _progress_hook(self, job: DownloadJob, base_progress: int):
         def hook(data: dict) -> None:
