@@ -462,6 +462,9 @@ class YtDlpAnalyzeService:
             if html_info:
                 logger.info("Instagram image analyze succeeded from webpage HTML")
                 return html_info, "instagram_html"
+            if self._is_instagram_image_post_url(url):
+                logger.info("Instagram photo post has no validated image URL")
+                return self._instagram_photo_unavailable_info(url), "instagram_photo_unavailable"
             raise InstagramAuthRequiredError(
                 raw_message=last_error.raw_message if last_error else None
             ) from last_error
@@ -485,6 +488,9 @@ class YtDlpAnalyzeService:
         if html_info:
             logger.info("Instagram image analyze succeeded from webpage HTML")
             return html_info, "instagram_html"
+        if self._is_instagram_image_post_url(url):
+            logger.info("Instagram photo post has no validated image URL")
+            return self._instagram_photo_unavailable_info(url), "instagram_photo_unavailable"
 
         raise InstagramAuthRequiredError(
             raw_message=last_error.raw_message
@@ -576,6 +582,18 @@ class YtDlpAnalyzeService:
             "thumbnail": image_url,
             "url": image_url,
             "ext": self._image_ext_from_url(image_url),
+            "_type": "image",
+        }
+
+    def _instagram_photo_unavailable_info(self, url: str) -> dict:
+        display_id = self._instagram_display_id(url)
+        return {
+            "id": display_id,
+            "display_id": display_id,
+            "title": f"Instagram photo {display_id}" if display_id else "Instagram photo",
+            "thumbnail": "",
+            "url": "",
+            "ext": "jpg",
             "_type": "image",
         }
 
