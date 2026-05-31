@@ -20,6 +20,7 @@ from app.services.instagram_auth_service import (
     InstagramAuthError,
     get_instagram_auth_status,
 )
+from app.services.youtube_auth_service import YouTubeAuthError
 from app.services.ytdlp_analyze_service import (
     INSTAGRAM_PHOTO_UNAVAILABLE_MESSAGE,
     YtDlpAnalyzeService,
@@ -217,7 +218,7 @@ class DownloadService:
                 "download",
                 options,
             )
-        except InstagramAuthError as exc:
+        except (InstagramAuthError, YouTubeAuthError) as exc:
             raise RuntimeError(
                 self._download_error_message(job.request.url, exc, item)
             ) from exc
@@ -233,7 +234,7 @@ class DownloadService:
             with yt_dlp.YoutubeDL(options) as ydl:
                 ydl.download([download_url])
             after = set(job_dir.iterdir())
-        except InstagramAuthError as exc:
+        except (InstagramAuthError, YouTubeAuthError) as exc:
             raise RuntimeError(
                 self._download_error_message(job.request.url, exc, item)
             ) from exc
@@ -323,7 +324,7 @@ class DownloadService:
 
             with yt_dlp.YoutubeDL(options) as ydl:
                 info = ydl.extract_info(self._download_url(url), download=False)
-        except InstagramAuthError as exc:
+        except (InstagramAuthError, YouTubeAuthError) as exc:
             raise RuntimeError(f"yt-dlp metadata failed: {self._safe_error(exc)}") from exc
         except Exception as exc:
             raise RuntimeError(f"yt-dlp metadata failed: {self._safe_error(exc)}") from exc
@@ -763,11 +764,14 @@ class DownloadService:
                 "Instagram cookies from the admin panel."
             )
         if detect_platform(url) == "YouTube Shorts" and (
-            "sign in to confirm" in message.lower() or "not a bot" in message.lower()
+            "sign in to confirm" in message.lower()
+            or "not a bot" in message.lower()
+            or "youtube cookie file" in message.lower()
+            or "youtube requires sign-in" in message.lower()
         ):
             return (
-                "YouTube requested sign-in verification. Please try another "
-                "link or configure YouTube cookies."
+                "YouTube requires sign-in verification. Please refresh YouTube "
+                "cookies from the admin panel."
             )
         return f"yt-dlp download failed: {message}"
 

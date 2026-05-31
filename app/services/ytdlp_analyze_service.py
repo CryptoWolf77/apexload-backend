@@ -13,6 +13,10 @@ from app.services.instagram_auth_service import (
     InstagramAuthError,
     get_instagram_auth_status,
 )
+from app.services.youtube_auth_service import (
+    YouTubeAuthError,
+    configured_youtube_cookiefile,
+)
 from app.services.ytdlp_options import (
     build_ytdlp_options,
     configured_instagram_cookiefile,
@@ -88,8 +92,8 @@ class InstagramAuthRequiredError(AnalyzeServiceError):
 class YouTubeAuthRequiredError(AnalyzeServiceError):
     error = "youtube_requires_auth"
     message = (
-        "YouTube requested sign-in verification. Please try another link or "
-        "configure YouTube cookies."
+        "YouTube requires sign-in verification. Please refresh YouTube cookies "
+        "from the admin panel."
     )
 
 
@@ -234,21 +238,7 @@ class YtDlpAnalyzeService:
         return configured_instagram_cookiefile()
 
     def _youtube_cookiefile(self) -> str | None:
-        settings = get_settings()
-        if not settings.enable_youtube_cookies:
-            logger.info("YouTube cookies disabled. Skipping cookie retry.")
-            return None
-        if not settings.youtube_cookies_file:
-            logger.info("YouTube cookies enabled but cookie file not found: (empty)")
-            return None
-        cookie_path = Path(settings.youtube_cookies_file).expanduser().resolve()
-        if not cookie_path.is_file():
-            logger.info("YouTube cookies enabled but cookie file not found: %s", cookie_path)
-            return None
-        if not self._cookie_file_looks_valid(cookie_path, domain="youtube.com"):
-            logger.info("YouTube cookies enabled but cookie file is not valid: %s", cookie_path)
-            return None
-        return str(cookie_path)
+        return configured_youtube_cookiefile()
 
     def instagram_cookie_status(self) -> dict[str, bool | int | str]:
         status = get_instagram_auth_status()
@@ -498,21 +488,14 @@ class YtDlpAnalyzeService:
 
     def _extract_youtube_info(self, url: str) -> tuple[dict, str]:
         try:
-            return self._extract_info(url), "yt_dlp"
+            source = "yt_dlp_cookies" if self._youtube_cookiefile() else "yt_dlp"
+            return self._extract_info(url), source
+        except YouTubeAuthRequiredError:
+            raise
         except AnalyzeServiceError as exc:
             if not self._is_youtube_auth_error(exc.raw_message):
                 raise
-            cookiefile = self._youtube_cookiefile()
-            if not cookiefile:
-                raise YouTubeAuthRequiredError(raw_message=exc.raw_message) from exc
-            try:
-                return self._extract_info(url, cookiefile=cookiefile), "yt_dlp_cookies"
-            except AnalyzeServiceError as cookie_exc:
-                if self._is_youtube_auth_error(cookie_exc.raw_message):
-                    raise YouTubeAuthRequiredError(
-                        raw_message=cookie_exc.raw_message
-                    ) from cookie_exc
-                raise
+            raise YouTubeAuthRequiredError(raw_message=exc.raw_message) from exc
 
     def _extract_x_info(self, url: str) -> tuple[dict, str]:
         try:
@@ -545,6 +528,8 @@ class YtDlpAnalyzeService:
                 info = ydl.extract_info(url, download=False)
         except InstagramAuthError:
             raise
+        except YouTubeAuthError as exc:
+            raise YouTubeAuthRequiredError(raw_message=str(exc)) from exc
         except UnsupportedUrlError:
             raise
         except Exception as exc:

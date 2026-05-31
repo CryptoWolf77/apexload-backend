@@ -49,11 +49,17 @@ class Settings:
     admin_api_key: str = os.getenv("ADMIN_API_KEY", "")
     ytdlp_update_policy: str = os.getenv("YTDLP_UPDATE_POLICY", "manual")
     ffmpeg_location: str = os.getenv("FFMPEG_LOCATION", "")
+    youtube_auth_mode: str = os.getenv("YOUTUBE_AUTH_MODE", "none").lower()
+    youtube_cookie_file: str = os.getenv(
+        "YOUTUBE_COOKIES_FILE",
+        "secrets/youtube_cookies.txt",
+    )
+    # Backward-compatible alias for older deployments.
     enable_youtube_cookies: bool = (
         os.getenv("ENABLE_YOUTUBE_COOKIES", "false").lower()
         in {"1", "true", "yes", "on"}
     )
-    youtube_cookies_file: str = os.getenv("YOUTUBE_COOKIES_FILE", "")
+    youtube_cookies_file: str = youtube_cookie_file
     cors_origins: list[str] = [
         origin.strip()
         for origin in os.getenv(

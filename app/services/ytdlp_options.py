@@ -7,6 +7,12 @@ from app.services.instagram_auth_service import (
     instagram_cookie_path,
     validate_instagram_cookie_file,
 )
+from app.services.youtube_auth_service import (
+    YouTubeAuthError,
+    get_youtube_auth_status,
+    youtube_cookie_path,
+    validate_youtube_cookie_file,
+)
 
 logger = logging.getLogger("apexload.ytdlp_options")
 
@@ -41,6 +47,8 @@ def build_ytdlp_options(
         impersonate_target = build_impersonate_target("chrome")
         if impersonate_target is not None:
             options["impersonate"] = impersonate_target
+    elif platform == "YouTube Shorts":
+        options.update(_youtube_auth_options())
 
     if extra_opts:
         options.update(extra_opts)
@@ -83,6 +91,23 @@ def configured_instagram_cookiefile() -> str | None:
     cookie_path = instagram_cookie_path()
     valid, _reason = validate_instagram_cookie_file(cookie_path)
     return str(cookie_path) if valid else None
+
+
+def _youtube_auth_options() -> dict[str, Any]:
+    status = get_youtube_auth_status()
+    mode = str(status["authMode"] or "none").lower()
+    if mode == "cookiefile":
+        cookie_path = youtube_cookie_path()
+        valid, reason = validate_youtube_cookie_file(cookie_path)
+        if not valid:
+            logger.info("YouTube cookiefile auth unavailable: %s", reason)
+            raise YouTubeAuthError("YouTube cookie file is missing on the server.")
+        return {"cookiefile": str(cookie_path)}
+    if mode == "none":
+        logger.info("YouTube auth mode is none; yt-dlp will run without cookies.")
+        return {}
+    logger.info("Unknown YouTube auth mode: %s", mode)
+    return {}
 
 
 def build_impersonate_target(value: str):

@@ -10,6 +10,7 @@ from app.services.ytdlp_analyze_service import (
     YtDlpAnalyzeService,
 )
 from app.services.instagram_auth_service import ytdlp_auth_debug_status
+from app.services.youtube_auth_service import get_youtube_auth_status
 
 router = APIRouter(tags=["debug"])
 instagram_service = YtDlpAnalyzeService()
@@ -26,10 +27,10 @@ async def config_debug() -> dict[str, bool | str]:
     return {
         "instagramAuthMode": settings.instagram_auth_mode,
         "enableInstagramCookies": settings.enable_instagram_cookies,
-        "enableYoutubeCookies": settings.enable_youtube_cookies,
+        "youtubeAuthMode": settings.youtube_auth_mode,
         "useMockAnalyzeFallback": settings.use_mock_analyze_fallback,
         "instagramCookieFile": settings.instagram_cookie_file,
-        "youtubeCookiesFile": settings.youtube_cookies_file,
+        "youtubeCookiesFile": settings.youtube_cookie_file,
     }
 
 
@@ -134,27 +135,17 @@ async def x_image_debug(
 @router.get("/youtube-cookies")
 async def youtube_cookies_debug() -> dict[str, bool | int | str | None]:
     # TODO: Remove or protect debug endpoints before production release.
-    settings = get_settings()
-    raw_path = settings.youtube_cookies_file
-    resolved_path = str(Path(raw_path).expanduser().resolve()) if raw_path else ""
-    cookie_path = Path(resolved_path) if resolved_path else None
-    exists = bool(cookie_path and cookie_path.is_file())
-    size = cookie_path.stat().st_size if cookie_path and exists else 0
-    valid, reason = _validate_cookie_file(
-        cookie_path if exists else None,
-        size,
-        domain="youtube.com",
-    )
+    status = get_youtube_auth_status()
 
     return {
         "success": True,
-        "enableYoutubeCookies": settings.enable_youtube_cookies,
-        "cookieFileRaw": raw_path,
-        "cookieFileResolved": resolved_path,
-        "cookieFileExists": exists,
-        "cookieFileSize": size,
-        "cookieFileValid": valid,
-        "cookieValidationReason": reason,
+        "youtubeAuthMode": status["authMode"],
+        "cookieFileRaw": status["cookieFileRaw"],
+        "cookieFileResolved": status["cookieFileResolved"],
+        "cookieFileExists": status["cookieFileExists"],
+        "cookieFileSize": status["cookieFileSize"],
+        "cookieFileValid": status["cookieFileLooksValid"],
+        "cookieValidationReason": status["reason"],
     }
 
 

@@ -266,7 +266,7 @@ If YouTube returns sign-in or bot verification, configure optional YouTube
 cookies:
 
 ```env
-ENABLE_YOUTUBE_COOKIES=true
+YOUTUBE_AUTH_MODE=cookiefile
 YOUTUBE_COOKIES_FILE=/app/secrets/youtube_cookies.txt
 ```
 
@@ -365,6 +365,47 @@ Debug auth status:
 ```bash
 curl http://127.0.0.1:8000/api/debug/ytdlp-auth
 ```
+
+## YouTube Cookiefile Operations
+
+Some YouTube and YouTube Shorts links may require sign-in verification. ApexLoad
+supports a separate YouTube Netscape cookie file so this can be fixed without
+affecting Instagram auth.
+
+Production Coolify env:
+
+```env
+YOUTUBE_AUTH_MODE=cookiefile
+YOUTUBE_COOKIES_FILE=/app/secrets/youtube_cookies.txt
+ADMIN_API_KEY=<strong-secret-key>
+```
+
+Local development default:
+
+```env
+YOUTUBE_AUTH_MODE=none
+YOUTUBE_COOKIES_FILE=secrets/youtube_cookies.txt
+```
+
+Upload and validate cookies through the admin API:
+
+```bash
+curl -H "X-Admin-Key: YOUR_KEY" http://127.0.0.1:8000/api/admin/youtube/auth-status
+
+curl -X POST http://127.0.0.1:8000/api/admin/youtube/upload-cookies \
+  -H "X-Admin-Key: YOUR_KEY" \
+  -H "Content-Type: application/json" \
+  -d "{\"cookiesText\":\"# Netscape HTTP Cookie File...\"}"
+
+curl -X POST http://127.0.0.1:8000/api/admin/youtube/validate-cookies \
+  -H "X-Admin-Key: YOUR_KEY" \
+  -H "Content-Type: application/json" \
+  -d "{\"testUrl\":\"https://www.youtube.com/shorts/dQw4w9WgXcQ\"}"
+```
+
+`/api/debug/ytdlp-auth` includes `youtubeAuthMode`,
+`youtubeCookieFileExists`, and `youtubeCookieFileLooksValid`. Never commit real
+YouTube cookies to GitHub or bake them into the Docker image.
 
 Download API behavior changed in Version 1.3.2: only one selected item is
 accepted per request. Requests with multiple `selectedItems` return:
