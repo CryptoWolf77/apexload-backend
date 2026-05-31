@@ -226,6 +226,7 @@ class DownloadService:
             self._configure_audio_options(options, item)
 
         self._ensure_instagram_download_auth(job.request.url, item, options)
+        self._log_youtube_download_options(job.request.url, item, options)
 
         try:
             import yt_dlp
@@ -352,10 +353,24 @@ class DownloadService:
                 f"best[height<={height}]/bestvideo+bestaudio/best"
             )
 
+        if platform == "YouTube Shorts":
+            return self._youtube_format_selector(height)
+
         if shutil.which("ffmpeg"):
             return f"bestvideo[height<={height}]+bestaudio/best[height<={height}]/best"
         logger.info("ffmpeg not found. Using single-file format fallback.")
         return f"best[height<={height}]/best"
+
+    def _youtube_format_selector(self, height: int | None) -> str:
+        if not height:
+            return "bestvideo+bestaudio/best[ext=mp4]/best"
+        # YouTube Shorts can omit an exact requested quality. Keep the requested
+        # ceiling, then fall through to muxed MP4/best so a missing 480p/720p
+        # format does not fail an otherwise downloadable clip.
+        return (
+            f"bestvideo[height<={height}]+bestaudio/"
+            f"best[height<={height}]/best[ext=mp4]/best"
+        )
 
     def _download_instagram_with_cli(
         self,
@@ -563,6 +578,23 @@ class DownloadService:
             raise RuntimeError(
                 "Instagram download auth misconfigured: cookiefile missing from yt-dlp options."
             )
+
+    def _log_youtube_download_options(
+        self,
+        url: str,
+        item: SelectedDownloadItem,
+        options: dict,
+    ) -> None:
+        if detect_platform(url) != "YouTube Shorts":
+            return
+        cookiefile = options.get("cookiefile")
+        logger.info(
+            "YouTube download options: platform=YouTube selectedFormatId=%s "
+            "ytdlpFormat=%s cookieFileExists=%s",
+            self._format_id(item),
+            options.get("format"),
+            bool(cookiefile and Path(str(cookiefile)).is_file()),
+        )
 
     def _progress_hook(self, job: DownloadJob, base_progress: int):
         def hook(data: dict) -> None:
@@ -773,6 +805,11 @@ class DownloadService:
                 "YouTube requires sign-in verification. Please refresh YouTube "
                 "cookies from the admin panel."
             )
+        if detect_platform(url) == "YouTube Shorts" and (
+            "requested format is not available" in message.lower()
+            or "format is not available" in message.lower()
+        ):
+            return "This YouTube format is not available. Try another quality or link."
         return f"yt-dlp download failed: {message}"
 
     def _is_instagram_blocked_error(self, message: str) -> bool:
