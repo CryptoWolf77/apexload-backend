@@ -10,8 +10,9 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-RUN python -m pip install --no-cache-dir -U --pre "yt-dlp[default,curl-cffi]"
+RUN python -m pip install --no-cache-dir --upgrade pip
+RUN python -m pip install --no-cache-dir -r requirements.txt
+RUN python -m pip install --no-cache-dir -U --pre "yt-dlp[default,curl-cffi]" yt-dlp-ejs
 
 COPY app ./app
 

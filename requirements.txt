@@ -4,3 +4,4 @@ pydantic
 python-dotenv
 python-multipart
 yt-dlp[default,curl-cffi]
+yt-dlp-ejs

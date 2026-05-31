@@ -3,6 +3,7 @@ import os
 import shutil
 import subprocess
 from datetime import datetime, timezone
+from importlib import metadata
 from pathlib import Path
 from typing import Any
 
@@ -140,12 +141,15 @@ def ytdlp_auth_debug_status() -> dict[str, Any]:
     from app.services.youtube_auth_service import get_youtube_auth_status
 
     youtube_status = get_youtube_auth_status()
+    ejs_version = ytdlp_ejs_version()
     return {
         "ytDlpVersion": yt_dlp_version(),
         "ffmpegFound": shutil.which("ffmpeg") is not None,
         "ffprobeFound": shutil.which("ffprobe") is not None,
         "nodeFound": shutil.which("node") is not None,
         "nodeVersion": node_version(),
+        "ytdlpEjsFound": ejs_version is not None,
+        "ytdlpEjsVersion": ejs_version,
         "instagramAuthMode": settings.instagram_auth_mode,
         "impersonate": "chrome"
         if (settings.instagram_auth_mode or "").lower() in {"cookiefile", "browser"}
@@ -184,6 +188,13 @@ def node_version() -> str | None:
         return None
     version = (result.stdout or result.stderr).strip()
     return version or None
+
+
+def ytdlp_ejs_version() -> str | None:
+    try:
+        return metadata.version("yt-dlp-ejs")
+    except metadata.PackageNotFoundError:
+        return None
 
 
 def _validate_cookie_text(content: str) -> tuple[bool, str]:
