@@ -98,6 +98,7 @@ def get_youtube_auth_status() -> dict[str, Any]:
         "ffmpegFound": shutil.which("ffmpeg") is not None,
         "ffprobeFound": shutil.which("ffprobe") is not None,
         "nodeFound": shutil.which("node") is not None,
+        "denoFound": shutil.which("deno") is not None,
         "ytDlpVersion": yt_dlp_version(),
     }
 

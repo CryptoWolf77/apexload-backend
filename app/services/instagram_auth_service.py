@@ -148,6 +148,8 @@ def ytdlp_auth_debug_status() -> dict[str, Any]:
         "ffprobeFound": shutil.which("ffprobe") is not None,
         "nodeFound": shutil.which("node") is not None,
         "nodeVersion": node_version(),
+        "denoFound": shutil.which("deno") is not None,
+        "denoVersion": deno_version(),
         "ytdlpEjsFound": ejs_version is not None,
         "ytdlpEjsVersion": ejs_version,
         "instagramAuthMode": settings.instagram_auth_mode,
@@ -174,11 +176,20 @@ def yt_dlp_version() -> str:
 
 
 def node_version() -> str | None:
-    if shutil.which("node") is None:
+    return _runtime_version("node", "--version")
+
+
+def deno_version() -> str | None:
+    output = _runtime_version("deno", "--version")
+    return output.splitlines()[0] if output else None
+
+
+def _runtime_version(binary: str, *args: str) -> str | None:
+    if shutil.which(binary) is None:
         return None
     try:
         result = subprocess.run(
-            ["node", "--version"],
+            [binary, *args],
             capture_output=True,
             text=True,
             timeout=5,

@@ -49,6 +49,7 @@ def build_ytdlp_options(
             options["impersonate"] = impersonate_target
     elif platform == "YouTube Shorts":
         options.update(_youtube_auth_options())
+        options["js_runtimes"] = {"deno": {}}
 
     if extra_opts:
         options.update(extra_opts)
