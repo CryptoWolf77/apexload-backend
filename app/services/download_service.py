@@ -810,6 +810,18 @@ class DownloadService:
             or "format is not available" in message.lower()
         ):
             return "This YouTube format is not available. Try another quality or link."
+        if detect_platform(url) == "YouTube Shorts" and (
+            "no challenge solving failed" in message.lower()
+            or "supported javascript runtime" in message.lower()
+            or "challenge solver" in message.lower()
+            or "only images are available" in message.lower()
+            or "storyboard" in message.lower()
+            or "no video formats found" in message.lower()
+        ):
+            return (
+                "YouTube video formats are temporarily unavailable. "
+                "Please try another link."
+            )
         return f"yt-dlp download failed: {message}"
 
     def _is_instagram_blocked_error(self, message: str) -> bool:

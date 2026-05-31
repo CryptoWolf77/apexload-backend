@@ -97,6 +97,7 @@ def get_youtube_auth_status() -> dict[str, Any]:
         "reason": _last_validation_reason if _last_validation_status != "unknown" else reason,
         "ffmpegFound": shutil.which("ffmpeg") is not None,
         "ffprobeFound": shutil.which("ffprobe") is not None,
+        "nodeFound": shutil.which("node") is not None,
         "ytDlpVersion": yt_dlp_version(),
     }
 

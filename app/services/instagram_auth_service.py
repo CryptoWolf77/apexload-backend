@@ -1,6 +1,7 @@
 import logging
 import os
 import shutil
+import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -143,6 +144,8 @@ def ytdlp_auth_debug_status() -> dict[str, Any]:
         "ytDlpVersion": yt_dlp_version(),
         "ffmpegFound": shutil.which("ffmpeg") is not None,
         "ffprobeFound": shutil.which("ffprobe") is not None,
+        "nodeFound": shutil.which("node") is not None,
+        "nodeVersion": node_version(),
         "instagramAuthMode": settings.instagram_auth_mode,
         "impersonate": "chrome"
         if (settings.instagram_auth_mode or "").lower() in {"cookiefile", "browser"}
@@ -164,6 +167,23 @@ def yt_dlp_version() -> str:
         return str(yt_dlp.version.__version__)
     except Exception:
         return "unknown"
+
+
+def node_version() -> str | None:
+    if shutil.which("node") is None:
+        return None
+    try:
+        result = subprocess.run(
+            ["node", "--version"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except Exception:
+        return None
+    version = (result.stdout or result.stderr).strip()
+    return version or None
 
 
 def _validate_cookie_text(content: str) -> tuple[bool, str]:
