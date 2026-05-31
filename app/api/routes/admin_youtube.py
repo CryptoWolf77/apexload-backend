@@ -3,6 +3,7 @@ from typing import Any
 from fastapi import APIRouter, Header, HTTPException, Request
 from pydantic import BaseModel
 
+from app.core.admin_rate_limiter import enforce_admin_rate_limit
 from app.core.config import get_settings
 from app.services.youtube_auth_service import (
     get_youtube_auth_status,
@@ -30,8 +31,12 @@ def require_admin_key(x_admin_key: str | None) -> None:
 
 
 @router.get("/api/admin/youtube/auth-status")
-async def auth_status(x_admin_key: str | None = Header(default=None)) -> dict[str, Any]:
+async def auth_status(
+    request: Request,
+    x_admin_key: str | None = Header(default=None),
+) -> dict[str, Any]:
     require_admin_key(x_admin_key)
+    enforce_admin_rate_limit(request, "youtube_auth_status", 30, 60)
     return {"success": True, **get_youtube_auth_status()}
 
 
@@ -41,6 +46,7 @@ async def upload_cookies(
     x_admin_key: str | None = Header(default=None),
 ) -> dict[str, Any]:
     require_admin_key(x_admin_key)
+    enforce_admin_rate_limit(request, "youtube_upload_cookies", 5, 600)
     content_type = request.headers.get("content-type", "")
     cookies_text = ""
     if "multipart/form-data" in content_type:
@@ -62,10 +68,12 @@ async def upload_cookies(
 
 @router.post("/api/admin/youtube/validate-cookies")
 async def validate_cookies(
+    request: Request,
     payload: ValidateCookiesRequest,
     x_admin_key: str | None = Header(default=None),
 ) -> dict[str, Any]:
     require_admin_key(x_admin_key)
+    enforce_admin_rate_limit(request, "youtube_validate_cookies", 10, 60)
     status = test_youtube_cookie_with_ytdlp(payload.testUrl)
     return {
         "success": status["lastValidationStatus"] == "valid",
