@@ -58,6 +58,9 @@ MIN_POST_IMAGE_BYTES = 10 * 1024
 INSTAGRAM_PHOTO_UNAVAILABLE_MESSAGE = (
     "Instagram photo posts are not available for this link. Try a Reel/video link."
 )
+FACEBOOK_PHOTO_UNAVAILABLE_MESSAGE = (
+    "Facebook photo posts are not available for this link. Try a video link."
+)
 X_BROWSER_HEADERS = {
     "User-Agent": INSTAGRAM_BROWSER_HEADERS["User-Agent"],
     "Referer": "https://x.com/",
@@ -112,6 +115,8 @@ class YtDlpAnalyzeService:
             info, source = self._extract_instagram_info(normalized_url)
         elif platform == "YouTube Shorts":
             info, source = self._extract_youtube_info(normalized_url)
+        elif platform == "Facebook":
+            info, source = self._extract_facebook_info(normalized_url)
         elif platform == "X/Twitter":
             info, source = self._extract_x_info(normalized_url)
         else:
@@ -160,6 +165,8 @@ class YtDlpAnalyzeService:
                     unavailable_reason=(
                         INSTAGRAM_PHOTO_UNAVAILABLE_MESSAGE
                         if platform == "Instagram" and not thumbnail
+                        else FACEBOOK_PHOTO_UNAVAILABLE_MESSAGE
+                        if platform == "Facebook" and not thumbnail
                         else "No image URL found"
                     ),
                 )
@@ -167,6 +174,8 @@ class YtDlpAnalyzeService:
             message=(
                 INSTAGRAM_PHOTO_UNAVAILABLE_MESSAGE
                 if platform == "Instagram" and media_type == "image" and not thumbnail
+                else FACEBOOK_PHOTO_UNAVAILABLE_MESSAGE
+                if platform == "Facebook" and media_type == "image" and not thumbnail
                 else "Image detected, but direct image URL was not found."
                 if media_type == "image" and not thumbnail
                 else None
@@ -497,6 +506,18 @@ class YtDlpAnalyzeService:
                 raise
             raise YouTubeAuthRequiredError(raw_message=exc.raw_message) from exc
 
+    def _extract_facebook_info(self, url: str) -> tuple[dict, str]:
+        try:
+            return self._extract_info(url), "yt_dlp"
+        except AnalyzeServiceError as exc:
+            if not self._is_facebook_photo_unavailable_error(exc.raw_message):
+                raise
+            logger.info(
+                "Facebook image/photo analyze unavailable: %s",
+                self._short_error(exc.raw_message),
+            )
+            return self._facebook_photo_unavailable_info(url), "facebook_photo_unavailable"
+
     def _extract_x_info(self, url: str) -> tuple[dict, str]:
         try:
             return self._extract_info(url), "yt_dlp"
@@ -549,6 +570,24 @@ class YtDlpAnalyzeService:
             or "no video formats" in text
         )
 
+    def _is_facebook_photo_unavailable_error(self, message: str) -> bool:
+        text = message.lower()
+        if "facebook" not in text:
+            return False
+        return any(
+            marker in text
+            for marker in (
+                "this video is only available for registered users",
+                "use --cookies-from-browser",
+                "login required",
+                "registered users",
+                "no video formats found",
+                "no video could be found",
+                "no video found",
+                "metadata failed",
+            )
+        )
+
     def _extract_instagram_image_info_from_html(
         self,
         url: str,
@@ -576,6 +615,18 @@ class YtDlpAnalyzeService:
             "id": display_id,
             "display_id": display_id,
             "title": f"Instagram photo {display_id}" if display_id else "Instagram photo",
+            "thumbnail": "",
+            "url": "",
+            "ext": "jpg",
+            "_type": "image",
+        }
+
+    def _facebook_photo_unavailable_info(self, url: str) -> dict:
+        display_id = self._facebook_display_id(url)
+        return {
+            "id": display_id,
+            "display_id": display_id,
+            "title": f"Facebook photo {display_id}" if display_id else "Facebook photo",
             "thumbnail": "",
             "url": "",
             "ext": "jpg",
@@ -1345,6 +1396,18 @@ class YtDlpAnalyzeService:
                 return parts[index + 1]
         return ""
 
+    def _facebook_display_id(self, url: str) -> str:
+        parsed = urlparse(url)
+        query = parse_qsl(parsed.query, keep_blank_values=True)
+        for key, value in query:
+            if key in {"fbid", "story_fbid", "id"} and value:
+                return value
+        parts = [part for part in parsed.path.split("/") if part]
+        for token in reversed(parts):
+            if token.isdigit():
+                return token
+        return parts[-1] if parts else ""
+
     def _image_ext_from_url(self, url: str) -> str:
         lower = url.lower()
         if ".png" in lower or "format=png" in lower:
@@ -1365,6 +1428,9 @@ class YtDlpAnalyzeService:
         lower_url = url.lower()
         if platform == "Instagram" and "/reel/" in lower_url:
             return "video"
+
+        if str(info.get("_type") or "").lower() == "image":
+            return "image"
 
         duration = info.get("duration")
         if isinstance(duration, (int, float)) and duration > 0:

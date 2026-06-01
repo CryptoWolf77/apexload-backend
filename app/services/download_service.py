@@ -22,6 +22,7 @@ from app.services.instagram_auth_service import (
 )
 from app.services.youtube_auth_service import YouTubeAuthError
 from app.services.ytdlp_analyze_service import (
+    FACEBOOK_PHOTO_UNAVAILABLE_MESSAGE,
     INSTAGRAM_PHOTO_UNAVAILABLE_MESSAGE,
     YtDlpAnalyzeService,
 )
@@ -302,6 +303,8 @@ class DownloadService:
         if not image_url:
             if detect_platform(job.request.url) == "X/Twitter":
                 raise RuntimeError("Could not find a downloadable image for this X post.")
+            if detect_platform(job.request.url) == "Facebook":
+                raise RuntimeError(FACEBOOK_PHOTO_UNAVAILABLE_MESSAGE)
             raise RuntimeError(
                 INSTAGRAM_PHOTO_UNAVAILABLE_MESSAGE
             )
@@ -691,6 +694,8 @@ class DownloadService:
                 or "yt-dlp metadata failed" in message
                 or "twitter" in message
             )
+        if platform == "Facebook":
+            return self._is_facebook_photo_unavailable_error(message)
         return False
 
     def _sanitize_filename(self, value: str) -> str:
@@ -795,6 +800,13 @@ class DownloadService:
                 "Instagram requires a valid server-side session. Please refresh "
                 "Instagram cookies from the admin panel."
             )
+        if (
+            detect_platform(url) == "Facebook"
+            and item
+            and self._item_type(item) == "image"
+            and self._is_facebook_photo_unavailable_error(message)
+        ):
+            return FACEBOOK_PHOTO_UNAVAILABLE_MESSAGE
         if detect_platform(url) == "YouTube Shorts" and (
             "sign in to confirm" in message.lower()
             or "not a bot" in message.lower()
@@ -847,6 +859,23 @@ class DownloadService:
                 "server-side session",
                 "cookie file is missing",
                 "browser cookies are disabled",
+            )
+        )
+
+    def _is_facebook_photo_unavailable_error(self, message: str) -> bool:
+        text = message.lower()
+        return any(
+            marker in text
+            for marker in (
+                "this video is only available for registered users",
+                "use --cookies-from-browser",
+                "login required",
+                "registered users",
+                "facebook photo posts are not available",
+                "no video formats found",
+                "no video could be found",
+                "no video found",
+                "yt-dlp metadata failed",
             )
         )
 
