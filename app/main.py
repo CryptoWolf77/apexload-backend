@@ -7,6 +7,7 @@ from app.api.routes import (
     analyze,
     debug,
     download,
+    editor,
     files,
     health,
 )
@@ -41,6 +42,7 @@ app.add_middleware(
 app.include_router(health.router, prefix=settings.api_prefix)
 app.include_router(analyze.router, prefix=settings.api_prefix)
 app.include_router(download.router, prefix=settings.api_prefix)
+app.include_router(editor.router, prefix=settings.api_prefix)
 app.include_router(files.router, prefix=settings.api_prefix)
 app.include_router(debug.router, prefix=f"{settings.api_prefix}/debug", tags=["debug"])
 app.include_router(admin_instagram.router)

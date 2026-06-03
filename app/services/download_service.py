@@ -161,6 +161,26 @@ class DownloadService:
             return path
         return None
 
+    def register_external_file(self, path: Path, file_type: str) -> DownloadFile:
+        safe_name = self._sanitize_filename(path.name)
+        if safe_name != path.name:
+            safe_path = path.with_name(safe_name)
+            path.rename(safe_path)
+            path = safe_path
+
+        file_id = f"file_{uuid.uuid4().hex[:16]}"
+        file = DownloadFile(
+            fileId=file_id,
+            filename=path.name,
+            fileName=path.name,
+            type=file_type,
+            size=self._human_size(path.stat().st_size),
+            downloadUrl=f"/api/file/{file_id}",
+        )
+        with self._lock:
+            self._files[file_id] = path
+        return file
+
     def _download_item(
         self,
         job: DownloadJob,
@@ -635,17 +655,8 @@ class DownloadService:
             path.rename(safe_path)
             path = safe_path
 
-        file_id = f"file_{uuid.uuid4().hex[:16]}"
-        file = DownloadFile(
-            fileId=file_id,
-            filename=path.name,
-            fileName=path.name,
-            type=file_type,
-            size=self._human_size(path.stat().st_size),
-            downloadUrl=f"/api/file/{file_id}",
-        )
+        file = self.register_external_file(path, file_type)
         with self._lock:
-            self._files[file_id] = path
             job.files.append(file)
 
     def _update_job(
