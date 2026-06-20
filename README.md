@@ -91,6 +91,12 @@ public content analysis only.
 Do not ask app users for Instagram login, do not collect credentials, and do not
 commit cookies to GitHub.
 
+For the production cookie health checker, admin upload API, persistent
+`/data/cookies` volume, and email alerts, see
+[`docs/instagram_cookies_health.md`](docs/instagram_cookies_health.md).
+Recommended production deployments should set
+`INSTAGRAM_COOKIES_PATH=/data/cookies/instagram_cookies.txt`.
+
 Production Coolify configuration:
 
 ```env

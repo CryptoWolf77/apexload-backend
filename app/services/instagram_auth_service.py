@@ -23,8 +23,18 @@ class InstagramAuthError(RuntimeError):
 
 def instagram_cookie_path() -> Path:
     settings = get_settings()
-    raw_path = settings.instagram_cookie_file or settings.instagram_cookies_file
+    raw_path = (
+        settings.instagram_cookies_path
+        or settings.instagram_cookie_file
+        or settings.instagram_cookies_file
+    )
     return Path(raw_path).expanduser().resolve()
+
+
+def ensure_instagram_cookie_storage() -> Path:
+    cookie_path = instagram_cookie_path()
+    cookie_path.parent.mkdir(parents=True, exist_ok=True)
+    return cookie_path
 
 
 def validate_instagram_cookie_file(path: Path | None = None) -> tuple[bool, str]:
@@ -59,18 +69,33 @@ def validate_instagram_cookie_file(path: Path | None = None) -> tuple[bool, str]
 
 
 def save_instagram_cookie_file_securely(content: str) -> dict[str, Any]:
-    cookie_path = instagram_cookie_path()
+    cookie_path = ensure_instagram_cookie_storage()
     valid, reason = _validate_cookie_text(content)
     if not valid:
         return _status_with_validation(False, reason)
 
-    cookie_path.parent.mkdir(parents=True, exist_ok=True)
-    cookie_path.write_text(content, encoding="utf-8")
+    temp_path = cookie_path.with_name(f".{cookie_path.name}.upload.tmp")
+    temp_path.write_text(content, encoding="utf-8")
+    try:
+        os.chmod(temp_path, 0o600)
+    except OSError:
+        logger.info("Could not chmod temporary Instagram cookie file; continuing.")
+
+    valid, reason = validate_instagram_cookie_file(temp_path)
+    if not valid:
+        _safe_unlink(temp_path)
+        return _status_with_validation(False, reason)
+
+    if cookie_path.exists():
+        backup = cookie_path.with_name(
+            f"instagram_cookies.backup.{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.txt"
+        )
+        shutil.copy2(cookie_path, backup)
+    os.replace(temp_path, cookie_path)
     try:
         os.chmod(cookie_path, 0o600)
     except OSError:
         logger.info("Could not chmod Instagram cookie file; continuing.")
-
     valid, reason = validate_instagram_cookie_file(cookie_path)
     return _status_with_validation(valid, reason)
 
@@ -84,6 +109,7 @@ def delete_instagram_cookie_file() -> dict[str, Any]:
 
 def get_instagram_auth_status() -> dict[str, Any]:
     settings = get_settings()
+    ensure_instagram_cookie_storage()
     cookie_path = instagram_cookie_path()
     exists = cookie_path.is_file()
     size = cookie_path.stat().st_size if exists else 0
@@ -93,8 +119,8 @@ def get_instagram_auth_status() -> dict[str, Any]:
     )
     return {
         "authMode": settings.instagram_auth_mode,
-        "cookieFileConfigured": bool(settings.instagram_cookie_file),
-        "cookieFileRaw": settings.instagram_cookie_file,
+        "cookieFileConfigured": bool(settings.instagram_cookies_path),
+        "cookieFileRaw": settings.instagram_cookies_path,
         "cookieFileResolved": str(cookie_path),
         "cookieFileExists": exists,
         "cookieFileSize": size,
@@ -253,3 +279,11 @@ def _last_updated(cookie_path: Path) -> str:
 def _safe_error(exc: Exception) -> str:
     message = " ".join(str(exc).split())
     return message[:240] or "Instagram authentication failed"
+
+
+def _safe_unlink(path: Path) -> None:
+    try:
+        if path.exists():
+            path.unlink()
+    except OSError:
+        logger.info("Could not delete temporary Instagram cookie file.")

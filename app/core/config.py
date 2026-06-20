@@ -20,9 +20,16 @@ class Settings:
         "INSTAGRAM_AUTH_MODE",
         "cookiefile",
     ).lower()
+    instagram_cookies_path: str = os.getenv(
+        "INSTAGRAM_COOKIES_PATH",
+        os.getenv(
+            "INSTAGRAM_COOKIE_FILE",
+            os.getenv("INSTAGRAM_COOKIES_FILE", "data/cookies/instagram_cookies.txt"),
+        ),
+    )
     instagram_cookie_file: str = os.getenv(
         "INSTAGRAM_COOKIE_FILE",
-        "/app/secrets/instagram_cookies.txt",
+        instagram_cookies_path,
     )
     # Backward-compatible aliases for existing deployments.
     enable_instagram_cookies: bool = (
@@ -32,6 +39,17 @@ class Settings:
     instagram_cookies_file: str = os.getenv(
         "INSTAGRAM_COOKIES_FILE",
         instagram_cookie_file,
+    )
+    instagram_healthcheck_url: str = os.getenv("INSTAGRAM_HEALTHCHECK_URL", "")
+    instagram_cookie_health_enabled: bool = (
+        os.getenv("INSTAGRAM_COOKIE_HEALTH_ENABLED", "true").lower()
+        in {"1", "true", "yes", "on"}
+    )
+    instagram_cookie_check_interval_minutes: int = int(
+        os.getenv("INSTAGRAM_COOKIE_CHECK_INTERVAL_MINUTES", "180")
+    )
+    instagram_cookie_alert_cooldown_hours: int = int(
+        os.getenv("INSTAGRAM_COOKIE_ALERT_COOLDOWN_HOURS", "12")
     )
     ytdlp_cookies_from_browser_enable: bool = (
         os.getenv("YTDLP_COOKIES_FROM_BROWSER_ENABLE", "false").lower()
@@ -47,6 +65,21 @@ class Settings:
         "",
     )
     admin_api_key: str = os.getenv("ADMIN_API_KEY", "")
+    admin_api_token: str = os.getenv("ADMIN_API_TOKEN", admin_api_key)
+    admin_alert_email: str = os.getenv("ADMIN_ALERT_EMAIL", "yhadrami2003@gmail.com")
+    admin_panel_url: str = os.getenv("ADMIN_PANEL_URL", "")
+    smtp_host: str = os.getenv("SMTP_HOST", "")
+    smtp_port: int = int(os.getenv("SMTP_PORT", "587"))
+    smtp_username: str = os.getenv("SMTP_USERNAME", "")
+    smtp_password: str = os.getenv("SMTP_PASSWORD", "")
+    smtp_from_email: str = os.getenv("SMTP_FROM_EMAIL", "")
+    smtp_from_name: str = os.getenv("SMTP_FROM_NAME", "ApexLoad Backend")
+    smtp_use_tls: bool = os.getenv("SMTP_USE_TLS", "true").lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
     ytdlp_update_policy: str = os.getenv("YTDLP_UPDATE_POLICY", "manual")
     ffmpeg_location: str = os.getenv("FFMPEG_LOCATION", "")
     youtube_auth_mode: str = os.getenv("YOUTUBE_AUTH_MODE", "none").lower()

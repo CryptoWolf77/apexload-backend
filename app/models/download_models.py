@@ -38,6 +38,7 @@ class DownloadStatusResponse(BaseModel):
     message: str
     files: list[DownloadFile]
     error: str | None = None
+    errorCode: str | None = None
 
 
 class FileEndpointResponse(BaseModel):

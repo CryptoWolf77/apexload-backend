@@ -7,5 +7,7 @@ youtube_cookies.txt
 cookies.txt
 *.cookies
 *.cookie
+data/cookies/*.txt
+data/cookies/*.json
 secrets/
 storage/downloads/ 

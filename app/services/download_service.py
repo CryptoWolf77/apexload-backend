@@ -20,6 +20,7 @@ from app.services.instagram_auth_service import (
     InstagramAuthError,
     get_instagram_auth_status,
 )
+from app.services.instagram_cookie_health import FRIENDLY_INSTAGRAM_UNAVAILABLE
 from app.services.youtube_auth_service import YouTubeAuthError
 from app.services.ytdlp_analyze_service import (
     FACEBOOK_PHOTO_UNAVAILABLE_MESSAGE,
@@ -47,6 +48,7 @@ class DownloadJob:
         self.progress = 0
         self.message = "Download job created"
         self.error: str | None = None
+        self.error_code: str | None = None
         self.files: list[DownloadFile] = []
 
 
@@ -127,6 +129,7 @@ class DownloadService:
                 progress=0,
                 message="Download failed",
                 error=self._safe_error(exc),
+                error_code=self._error_code_for(exc),
             )
 
     def get_status(self, job_id: str) -> DownloadStatusResponse:
@@ -141,6 +144,7 @@ class DownloadService:
                 message="Download job not found",
                 files=[],
                 error="Download job not found",
+                errorCode=None,
             )
         with self._lock:
             return DownloadStatusResponse(
@@ -152,6 +156,7 @@ class DownloadService:
                 message=job.message,
                 files=list(job.files),
                 error=job.error,
+                errorCode=job.error_code,
             )
 
     def get_file_path(self, file_id: str) -> Path | None:
@@ -666,6 +671,7 @@ class DownloadService:
         progress: int | None = None,
         message: str | None = None,
         error: str | None = None,
+        error_code: str | None = None,
     ) -> None:
         with self._lock:
             if status is not None:
@@ -676,6 +682,8 @@ class DownloadService:
                 job.message = message
             if error is not None:
                 job.error = error
+            if error_code is not None:
+                job.error_code = error_code
 
     def _get_job(self, job_id: str) -> DownloadJob | None:
         with self._lock:
@@ -807,10 +815,7 @@ class DownloadService:
         if detect_platform(url) == "Instagram" and self._is_instagram_blocked_error(
             message
         ):
-            return (
-                "Instagram requires a valid server-side session. Please refresh "
-                "Instagram cookies from the admin panel."
-            )
+            return FRIENDLY_INSTAGRAM_UNAVAILABLE
         if (
             detect_platform(url) == "Facebook"
             and item
@@ -846,6 +851,11 @@ class DownloadService:
                 "Please try another link."
             )
         return f"yt-dlp download failed: {message}"
+
+    def _error_code_for(self, exc: Exception) -> str | None:
+        if "instagram downloads are temporarily unavailable" in self._safe_error(exc).lower():
+            return "INSTAGRAM_COOKIES_INVALID"
+        return None
 
     def _is_instagram_blocked_error(self, message: str) -> bool:
         text = message.lower()

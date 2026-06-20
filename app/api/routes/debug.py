@@ -29,7 +29,7 @@ async def config_debug() -> dict[str, bool | str]:
         "enableInstagramCookies": settings.enable_instagram_cookies,
         "youtubeAuthMode": settings.youtube_auth_mode,
         "useMockAnalyzeFallback": settings.use_mock_analyze_fallback,
-        "instagramCookieFile": settings.instagram_cookie_file,
+        "instagramCookieFile": settings.instagram_cookies_path,
         "youtubeCookiesFile": settings.youtube_cookie_file,
     }
 

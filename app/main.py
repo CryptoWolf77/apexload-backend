@@ -12,6 +12,11 @@ from app.api.routes import (
     health,
 )
 from app.core.config import get_settings
+from app.services.instagram_cookie_health import (
+    initialize_instagram_cookie_storage,
+    start_instagram_cookie_health_scheduler,
+    stop_instagram_cookie_health_scheduler,
+)
 
 settings = get_settings()
 
@@ -47,6 +52,17 @@ app.include_router(files.router, prefix=settings.api_prefix)
 app.include_router(debug.router, prefix=f"{settings.api_prefix}/debug", tags=["debug"])
 app.include_router(admin_instagram.router)
 app.include_router(admin_youtube.router)
+
+
+@app.on_event("startup")
+async def startup_cookie_health() -> None:
+    initialize_instagram_cookie_storage()
+    start_instagram_cookie_health_scheduler()
+
+
+@app.on_event("shutdown")
+async def shutdown_cookie_health() -> None:
+    await stop_instagram_cookie_health_scheduler()
 
 
 @app.get("/")
