@@ -372,6 +372,22 @@ Debug auth status:
 curl http://127.0.0.1:8000/api/debug/ytdlp-auth
 ```
 
+## yt-dlp version management
+
+`yt-dlp` is pinned to a stable version for production reliability:
+
+```text
+yt-dlp==2026.07.04
+```
+
+Platforms such as Instagram, YouTube, TikTok, and Facebook change often, so
+`yt-dlp` should be updated regularly, but only after local testing. Do not use
+automatic production updates or runtime `pip install -U yt-dlp` commands. To
+update `yt-dlp`, change the pinned version in `requirements.txt`, test locally,
+then deploy.
+
+TODO: Add a weekly yt-dlp update checker email alert in a future task.
+
 ## YouTube Cookiefile Operations
 
 Some YouTube and YouTube Shorts links may require sign-in verification. ApexLoad

@@ -16,7 +16,6 @@ RUN curl -fsSL https://deno.land/install.sh | sh
 COPY requirements.txt .
 RUN python -m pip install --no-cache-dir --upgrade pip
 RUN python -m pip install --no-cache-dir -r requirements.txt
-RUN python -m pip install --no-cache-dir -U --pre "yt-dlp[default,curl-cffi]" yt-dlp-ejs
 
 COPY app ./app
 
