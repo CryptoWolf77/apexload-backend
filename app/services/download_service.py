@@ -21,6 +21,8 @@ from app.services.instagram_auth_service import (
     get_instagram_auth_status,
 )
 from app.services.instagram_cookie_health import FRIENDLY_INSTAGRAM_UNAVAILABLE
+from app.services.instagram_error_classifier import classify_instagram_error
+from app.services.instagram_safety_service import instagram_safety_service
 from app.services.youtube_auth_service import YouTubeAuthError
 from app.services.ytdlp_analyze_service import (
     FACEBOOK_PHOTO_UNAVAILABLE_MESSAGE,
@@ -84,10 +86,23 @@ class DownloadService:
         job_dir.mkdir(parents=True, exist_ok=True)
         self._update_job(job, status="processing", progress=5, message="Download started")
         logger.info("Download started. job_id=%s output_path=%s", job_id, job_dir)
+        safety_decision = None
 
         try:
             if not job.request.selectedItems:
                 raise ValueError("No download option selected")
+            if job.platform == "Instagram":
+                safety_decision = instagram_safety_service.begin_request()
+                if not safety_decision.allowed:
+                    self._update_job(
+                        job,
+                        status="failed",
+                        progress=0,
+                        message=safety_decision.message,
+                        error=safety_decision.message,
+                        error_code=safety_decision.code,
+                    )
+                    return
 
             for index, item in enumerate(job.request.selectedItems, start=1):
                 logger.info(
@@ -120,16 +135,32 @@ class DownloadService:
                 progress=100,
                 message=message,
             )
+            if job.platform == "Instagram":
+                instagram_safety_service.finish_success(safety_decision)
             logger.info("Download completed. job_id=%s files=%s", job_id, len(job.files))
         except Exception as exc:
             logger.exception("Download failed. job_id=%s", job_id)
+            classification = None
+            if job.platform == "Instagram":
+                classification = classify_instagram_error(exc)
+                if classification.category == "media_unavailable":
+                    instagram_safety_service.finish_neutral(safety_decision)
+                else:
+                    classification = instagram_safety_service.finish_failure(
+                        exc,
+                        safety_decision,
+                    )
             self._update_job(
                 job,
                 status="failed",
                 progress=0,
                 message="Download failed",
-                error=self._safe_error(exc),
-                error_code=self._error_code_for(exc),
+                error=classification.safe_user_message if classification else self._safe_error(exc),
+                error_code=(
+                    "INSTAGRAM_TEMPORARILY_UNAVAILABLE"
+                    if classification and classification.category != "media_unavailable"
+                    else self._error_code_for(exc)
+                ),
             )
 
     def get_status(self, job_id: str) -> DownloadStatusResponse:

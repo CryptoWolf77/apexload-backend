@@ -30,4 +30,5 @@ class AnalyzeResponse(BaseModel):
     duration: str | None = None
     formats: list[FormatOption] = Field(default_factory=list)
     error: str | None = None
+    code: str | None = None
     message: str | None = None

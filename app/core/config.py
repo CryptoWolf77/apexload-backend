@@ -51,6 +51,31 @@ class Settings:
     instagram_cookie_alert_cooldown_hours: int = int(
         os.getenv("INSTAGRAM_COOKIE_ALERT_COOLDOWN_HOURS", "12")
     )
+    instagram_safety_state_path: str = os.getenv("INSTAGRAM_SAFETY_STATE_PATH", "")
+    instagram_safety_mode_enabled: bool = (
+        os.getenv("INSTAGRAM_SAFETY_MODE_ENABLED", "true").lower()
+        in {"1", "true", "yes", "on"}
+    )
+    instagram_max_concurrent_jobs: int = int(os.getenv("INSTAGRAM_MAX_CONCURRENT_JOBS", "1"))
+    instagram_max_requests_per_minute: int = int(
+        os.getenv("INSTAGRAM_MAX_REQUESTS_PER_MINUTE", "3")
+    )
+    instagram_max_requests_per_hour: int = int(
+        os.getenv("INSTAGRAM_MAX_REQUESTS_PER_HOUR", "60")
+    )
+    instagram_failure_threshold: int = int(os.getenv("INSTAGRAM_FAILURE_THRESHOLD", "3"))
+    instagram_restriction_cooldown_hours: int = int(
+        os.getenv("INSTAGRAM_RESTRICTION_COOLDOWN_HOURS", "72")
+    )
+    instagram_rate_limit_cooldown_hours: int = int(
+        os.getenv("INSTAGRAM_RATE_LIMIT_COOLDOWN_HOURS", "24")
+    )
+    instagram_unknown_error_cooldown_minutes: int = int(
+        os.getenv("INSTAGRAM_UNKNOWN_ERROR_COOLDOWN_MINUTES", "30")
+    )
+    instagram_recovery_success_threshold: int = int(
+        os.getenv("INSTAGRAM_RECOVERY_SUCCESS_THRESHOLD", "2")
+    )
     ytdlp_cookies_from_browser_enable: bool = (
         os.getenv("YTDLP_COOKIES_FROM_BROWSER_ENABLE", "false").lower()
         in {"1", "true", "yes", "on"}

@@ -18,6 +18,7 @@ class DownloadStartResponse(BaseModel):
     jobId: str
     status: str
     message: str
+    errorCode: str | None = None
 
 
 class DownloadFile(BaseModel):

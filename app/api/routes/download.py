@@ -23,6 +23,7 @@ async def start_download(
             jobId="",
             status="failed",
             message="Only one download option can be selected per request.",
+            errorCode=None,
         )
     response = download_service.create_job(payload)
     background_tasks.add_task(download_service.process_job, response.jobId)

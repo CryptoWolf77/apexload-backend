@@ -14,6 +14,7 @@ from app.services.instagram_cookie_health import (
     safe_config,
     validate_uploaded_cookie_file,
 )
+from app.services.instagram_safety_service import instagram_safety_service
 from app.services.instagram_auth_service import (
     delete_instagram_cookie_file,
     get_instagram_auth_status,
@@ -126,6 +127,36 @@ async def cookie_health_config(
     return {"success": True, **safe_config()}
 
 
+@router.get("/admin/instagram/safety/status")
+async def instagram_safety_status(
+    request: Request,
+    authorization: str | None = Header(default=None),
+) -> dict[str, Any]:
+    require_admin_bearer(authorization)
+    enforce_admin_rate_limit(request, "instagram_safety_status", 30, 60)
+    return {"success": True, **instagram_safety_service.status()}
+
+
+@router.post("/admin/instagram/safety/check")
+async def instagram_safety_check(
+    request: Request,
+    authorization: str | None = Header(default=None),
+) -> dict[str, Any]:
+    require_admin_bearer(authorization)
+    enforce_admin_rate_limit(request, "instagram_safety_check", 10, 60)
+    return instagram_safety_service.manual_check()
+
+
+@router.post("/admin/instagram/safety/resume")
+async def instagram_safety_resume(
+    request: Request,
+    authorization: str | None = Header(default=None),
+) -> dict[str, Any]:
+    require_admin_bearer(authorization)
+    enforce_admin_rate_limit(request, "instagram_safety_resume", 5, 600)
+    return {"success": True, **instagram_safety_service.manual_resume()}
+
+
 @router.get("/api/admin/instagram/auth-status")
 async def auth_status(
     request: Request,
@@ -227,6 +258,14 @@ async def instagram_admin_page() -> str:
       <pre id="status">Not loaded</pre>
     </section>
     <section>
+      <h2>Instagram Safety Mode</h2>
+      <small>If Instagram is paused because of restriction or rate limit, avoid refreshing cookies repeatedly. Wait for cooldown or clear any warning on the Instagram account manually.</small>
+      <br />
+      <button onclick="loadSafety()">Safety status</button>
+      <button onclick="checkSafety()">Check now</button>
+      <button class="danger" onclick="resumeSafety()">Resume manually</button>
+    </section>
+    <section>
       <h2>Upload Netscape cookies</h2>
       <textarea id="cookies" placeholder="# Netscape HTTP Cookie File..."></textarea>
       <button onclick="uploadCookies()">Upload cookies</button>
@@ -248,6 +287,9 @@ async def instagram_admin_page() -> str:
       return data;
     }
     function loadStatus(){ api('/admin/instagram/cookies/status'); }
+    function loadSafety(){ api('/admin/instagram/safety/status'); }
+    function checkSafety(){ api('/admin/instagram/safety/check', {method:'POST', body: JSON.stringify({})}); }
+    function resumeSafety(){ api('/admin/instagram/safety/resume', {method:'POST', body: JSON.stringify({})}); }
     async function uploadCookies(){
       const form = new FormData();
       const blob = new Blob([document.getElementById('cookies').value], {type: 'text/plain'});

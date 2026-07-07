@@ -388,6 +388,17 @@ then deploy.
 
 TODO: Add a weekly yt-dlp update checker email alert in a future task.
 
+## Instagram Safety Mode
+
+Instagram Safety Mode pauses Instagram-only analyze/download work when the
+server-side Instagram session appears restricted, rate-limited, challenged, or
+cookie-invalid. It protects the session from aggressive retries and sends admin
+alerts/recovery emails through the existing notification service.
+
+See [`docs/instagram_safety_mode.md`](docs/instagram_safety_mode.md) for
+environment variables, admin endpoints, cooldown behavior, and manual resume
+steps.
+
 ## YouTube Cookiefile Operations
 
 Some YouTube and YouTube Shorts links may require sign-in verification. ApexLoad
