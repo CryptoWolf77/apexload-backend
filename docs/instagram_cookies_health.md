@@ -28,6 +28,7 @@ SMTP_PASSWORD=your_smtp_password
 SMTP_FROM_EMAIL=admin@yahyazlab.com
 SMTP_FROM_NAME=ApexLoad Backend
 SMTP_USE_TLS=true
+SMTP_USE_SSL=false
 ADMIN_API_TOKEN=change_this_to_a_secure_token
 ADMIN_PANEL_URL=https://api.apexload.org/admin/instagram
 INSTAGRAM_HEALTHCHECK_URL=https://www.instagram.com/reel/your_public_test_reel/
@@ -35,6 +36,29 @@ INSTAGRAM_HEALTHCHECK_URL=https://www.instagram.com/reel/your_public_test_reel/
 
 Keep SMTP credentials and admin tokens in Coolify environment variables only.
 Never commit cookies, SMTP passwords, or tokens to GitHub.
+
+### Cloudflare Email Sending SMTP
+
+Cloudflare Email Sending uses implicit TLS/SMTPS on port 465. It does not use
+STARTTLS on port 587 for outbound SMTP.
+
+Example configuration:
+
+```env
+SMTP_HOST=smtp.mx.cloudflare.net
+SMTP_PORT=465
+SMTP_USERNAME=api_token
+SMTP_PASSWORD=YOUR_CLOUDFLARE_EMAIL_SENDING_API_TOKEN
+SMTP_FROM_EMAIL=alerts@apexload.org
+SMTP_FROM_NAME=ApexLoad Backend
+SMTP_USE_SSL=true
+SMTP_USE_TLS=false
+ADMIN_ALERT_EMAIL=yhadrami2003@gmail.com
+```
+
+`SMTP_USE_SSL=true` takes priority over `SMTP_USE_TLS=true`, so the backend
+will not run implicit SSL and STARTTLS together. Never commit the Cloudflare API
+token to source control.
 
 ## How It Works
 
@@ -91,6 +115,9 @@ Safe config:
 curl -H "Authorization: Bearer $ADMIN_API_TOKEN" \
   https://api.apexload.org/admin/instagram/cookies/config
 ```
+
+The safe config response includes whether SMTP is configured and which
+transport mode is active, but it never returns SMTP passwords or API tokens.
 
 ## Exporting Cookies
 

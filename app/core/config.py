@@ -105,6 +105,12 @@ class Settings:
         "yes",
         "on",
     }
+    smtp_use_ssl: bool = os.getenv("SMTP_USE_SSL", "false").lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
     ytdlp_update_policy: str = os.getenv("YTDLP_UPDATE_POLICY", "manual")
     ffmpeg_location: str = os.getenv("FFMPEG_LOCATION", "")
     youtube_auth_mode: str = os.getenv("YOUTUBE_AUTH_MODE", "none").lower()

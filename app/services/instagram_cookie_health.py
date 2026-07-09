@@ -112,6 +112,11 @@ def safe_config() -> dict[str, Any]:
         "alertCooldownHours": settings.instagram_cookie_alert_cooldown_hours,
         "alertEmailConfigured": bool(settings.admin_alert_email),
         "smtpConfigured": smtp_configured(),
+        "smtpUseSsl": settings.smtp_use_ssl,
+        "smtpUseTls": settings.smtp_use_tls and not settings.smtp_use_ssl,
+        "smtpSecurity": "implicit_ssl"
+        if settings.smtp_use_ssl
+        else ("starttls" if settings.smtp_use_tls else "plain"),
         "healthcheckUrlConfigured": bool(settings.instagram_healthcheck_url),
         "adminPanelUrlConfigured": bool(settings.admin_panel_url),
     }
