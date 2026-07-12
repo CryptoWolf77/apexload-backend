@@ -1579,12 +1579,16 @@ class YtDlpAnalyzeService:
         thumbnail: str,
         platform: str = "",
     ) -> list[FormatOption]:
-        heights = self._available_heights(info)
+        resolutions = (
+            self._available_resolutions(info)
+            if platform == "Instagram"
+            else self._available_heights(info)
+        )
         duration = info.get("duration")
         snapchat_has_downloadable_video = self._has_video_signals(info) or (
             isinstance(duration, (int, float)) and duration > 0
         )
-        if platform == "Snapchat" and not heights and snapchat_has_downloadable_video:
+        if platform == "Snapchat" and not resolutions and snapchat_has_downloadable_video:
             return [
                 FormatOption(
                     id="best",
@@ -1616,10 +1620,10 @@ class YtDlpAnalyzeService:
                 ),
             ]
         return [
-            self._video_format("480p", "MP4 480p", 480, False, heights),
-            self._video_format("720p", "MP4 720p", 720, False, heights),
-            self._video_format("1080p", "MP4 1080p", 1080, True, heights),
-            self._video_format("2160p", "MP4 2160p / 4K", 2160, True, heights),
+            self._video_format("480p", "MP4 480p", 480, False, resolutions),
+            self._video_format("720p", "MP4 720p", 720, False, resolutions),
+            self._video_format("1080p", "MP4 1080p", 1080, True, resolutions),
+            self._video_format("2160p", "MP4 2160p / 4K", 2160, True, resolutions),
             FormatOption(
                 id="mp3",
                 label="MP3 Audio",
@@ -1641,6 +1645,24 @@ class YtDlpAnalyzeService:
             ),
         ]
 
+    def _available_resolutions(self, info: dict) -> set[int]:
+        resolutions: set[int] = set()
+        formats = info.get("formats")
+        if isinstance(formats, list):
+            for item in formats:
+                if not isinstance(item, dict):
+                    continue
+                if str(item.get("vcodec") or "").lower() == "none":
+                    continue
+                resolution = self._effective_video_resolution(item)
+                if resolution is not None:
+                    resolutions.add(resolution)
+
+        root_resolution = self._effective_video_resolution(info)
+        if root_resolution is not None:
+            resolutions.add(root_resolution)
+        return resolutions
+
     def _available_heights(self, info: dict) -> set[int]:
         heights: set[int] = set()
         formats = info.get("formats")
@@ -1657,15 +1679,31 @@ class YtDlpAnalyzeService:
                     heights.add(height)
         return heights
 
+    def _effective_video_resolution(self, item: dict) -> int | None:
+        width = self._valid_dimension(item.get("width"))
+        height = self._valid_dimension(item.get("height"))
+        if width is not None and height is not None:
+            return min(width, height)
+        return width or height
+
+    def _valid_dimension(self, value: object) -> int | None:
+        if isinstance(value, bool):
+            return None
+        try:
+            dimension = int(float(value))
+        except (TypeError, ValueError, OverflowError):
+            return None
+        return dimension if dimension > 0 else None
+
     def _video_format(
         self,
         format_id: str,
         label: str,
-        height: int,
+        resolution: int,
         premium: bool,
-        heights: set[int],
+        resolutions: set[int],
     ) -> FormatOption:
-        available = any(item >= height for item in heights)
+        available = any(item >= resolution for item in resolutions)
         return FormatOption(
             id=format_id,
             label=label,

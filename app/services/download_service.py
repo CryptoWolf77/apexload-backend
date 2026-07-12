@@ -1,3 +1,4 @@
+import json
 import logging
 import re
 import shutil
@@ -407,10 +408,9 @@ class DownloadService:
             return "best"
 
         if platform == "Instagram":
-            return (
-                f"bestvideo[height<={height}]+bestaudio/"
-                f"best[height<={height}]/bestvideo+bestaudio/best"
-            )
+            # Instagram downloads use the CLI path, where -S res:<target>
+            # applies the requested ceiling to the video's short edge.
+            return "bv*+ba/b"
 
         if platform == "YouTube Shorts":
             return self._youtube_format_selector(height)
@@ -448,28 +448,22 @@ class DownloadService:
             )
 
         is_audio_item = self._is_audio_item(item)
-        cli_format = self._instagram_cli_format_selector(item)
-        command = [
-            sys.executable,
-            "-m",
-            "yt_dlp",
-            "--cookies",
+        command, cli_format, sort_expression = self._instagram_cli_command(
             cookiefile,
-            "--impersonate",
-            "chrome",
-            "-f",
-            cli_format,
-        ]
-        if is_audio_item:
-            command.extend(["-x", "--audio-format", self._audio_codec(item)])
-        command.extend(["-o", output_template, download_url])
+            item,
+            output_template,
+            download_url,
+        )
 
         logger.info(
-            "Instagram CLI download start: job_id=%s type=%s formatId=%s "
-            "cookieFileExists=%s impersonate=chrome outputTemplate=%s",
+            "Instagram CLI download start: job_id=%s type=%s "
+            "requestedQuality=%s format=%s sort=%s cookieFileExists=%s "
+            "impersonate=chrome outputTemplate=%s",
             job.job_id,
             item_type,
             self._format_id(item),
+            cli_format,
+            sort_expression or "highest_available",
             cookie_file_exists,
             output_template,
         )
@@ -508,22 +502,189 @@ class DownloadService:
             new_files = self._validated_audio_outputs(job_dir, item, new_files)
         else:
             new_files = self._validated_media_outputs(new_files)
+            self._log_instagram_video_diagnostics(
+                item,
+                sort_expression,
+                result.stdout,
+                new_files,
+            )
         for path in new_files:
             self._register_file(job, path, "audio" if is_audio_item else item_type)
 
     def _instagram_cli_format_selector(self, item: SelectedDownloadItem) -> str:
         if self._is_audio_item(item):
             return "bestaudio/best"
-        height_map = {
+        return "bv*+ba/b"
+
+    def _instagram_cli_sort_expression(
+        self,
+        item: SelectedDownloadItem,
+    ) -> str | None:
+        if self._is_audio_item(item):
+            return None
+        resolution_map = {
             "480p": 480,
             "720p": 720,
             "1080p": 1080,
             "2160p": 2160,
         }
-        height = height_map.get(self._format_id(item))
-        if not height:
-            return "best"
-        return f"bestvideo[height<={height}]+bestaudio/best[height<={height}]/best"
+        target = resolution_map.get(self._format_id(item))
+        return f"res:{target},fps,br" if target else None
+
+    def _instagram_cli_command(
+        self,
+        cookiefile: str,
+        item: SelectedDownloadItem,
+        output_template: str,
+        download_url: str,
+    ) -> tuple[list[str], str, str | None]:
+        cli_format = self._instagram_cli_format_selector(item)
+        sort_expression = self._instagram_cli_sort_expression(item)
+        command = [
+            sys.executable,
+            "-m",
+            "yt_dlp",
+            "--cookies",
+            cookiefile,
+            "--impersonate",
+            "chrome",
+            "-f",
+            cli_format,
+        ]
+        if self._is_audio_item(item):
+            command.extend(["-x", "--audio-format", self._audio_codec(item)])
+        else:
+            if sort_expression:
+                command.extend(["-S", sort_expression])
+            command.extend(
+                [
+                    "--merge-output-format",
+                    "mp4",
+                    "--remux-video",
+                    "mp4",
+                    "--no-simulate",
+                    "--print",
+                    "before_dl:APEXLOAD_SELECTED_FORMAT="
+                    "%(format_id)s|%(width)s|%(height)s",
+                ]
+            )
+        command.extend(["-o", output_template, download_url])
+        return command, cli_format, sort_expression
+
+    def _log_instagram_video_diagnostics(
+        self,
+        item: SelectedDownloadItem,
+        sort_expression: str | None,
+        stdout: str,
+        files: list[Path],
+    ) -> None:
+        selected_format_id, source_width, source_height = (
+            self._instagram_selected_format_details(stdout)
+        )
+        for path in files:
+            final_width, final_height = self._ffprobe_video_dimensions(path)
+            logged_width = source_width or final_width
+            logged_height = source_height or final_height
+            effective_resolution = self._effective_resolution(
+                logged_width,
+                logged_height,
+            )
+            logger.info(
+                "Instagram video output: requestedQuality=%s sort=%s "
+                "selectedFormatId=%s sourceWidth=%s sourceHeight=%s "
+                "effectiveShortEdge=%s finalWidth=%s finalHeight=%s "
+                "outputFilename=%s outputFileSize=%s",
+                self._format_id(item),
+                sort_expression or "highest_available",
+                selected_format_id or "unknown",
+                logged_width or "unknown",
+                logged_height or "unknown",
+                effective_resolution or "unknown",
+                final_width or "unknown",
+                final_height or "unknown",
+                path.name,
+                path.stat().st_size,
+            )
+
+    def _instagram_selected_format_details(
+        self,
+        stdout: str,
+    ) -> tuple[str | None, int | None, int | None]:
+        prefix = "APEXLOAD_SELECTED_FORMAT="
+        for line in stdout.splitlines():
+            if not line.startswith(prefix):
+                continue
+            fields = line[len(prefix) :].split("|", maxsplit=2)
+            if len(fields) != 3:
+                continue
+            return (
+                fields[0].strip() or None,
+                self._positive_int(fields[1]),
+                self._positive_int(fields[2]),
+            )
+        return None, None, None
+
+    def _ffprobe_video_dimensions(
+        self,
+        path: Path,
+    ) -> tuple[int | None, int | None]:
+        ffprobe = shutil.which("ffprobe")
+        if not ffprobe:
+            return None, None
+        try:
+            result = subprocess.run(
+                [
+                    ffprobe,
+                    "-v",
+                    "error",
+                    "-select_streams",
+                    "v:0",
+                    "-show_entries",
+                    "stream=width,height",
+                    "-of",
+                    "json",
+                    str(path),
+                ],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            )
+            if result.returncode != 0:
+                return None, None
+            payload = json.loads(result.stdout or "{}")
+            streams = payload.get("streams")
+            if not isinstance(streams, list) or not streams:
+                return None, None
+            stream = streams[0]
+            if not isinstance(stream, dict):
+                return None, None
+            return (
+                self._positive_int(stream.get("width")),
+                self._positive_int(stream.get("height")),
+            )
+        except (OSError, ValueError, TypeError, subprocess.SubprocessError):
+            return None, None
+
+    def _effective_resolution(
+        self,
+        width: object,
+        height: object,
+    ) -> int | None:
+        valid_width = self._positive_int(width)
+        valid_height = self._positive_int(height)
+        if valid_width is not None and valid_height is not None:
+            return min(valid_width, valid_height)
+        return valid_width or valid_height
+
+    def _positive_int(self, value: object) -> int | None:
+        if isinstance(value, bool):
+            return None
+        try:
+            parsed = int(float(value))
+        except (TypeError, ValueError, OverflowError):
+            return None
+        return parsed if parsed > 0 else None
 
     def _validated_media_outputs(self, files: list[Path]) -> list[Path]:
         valid_files = [
