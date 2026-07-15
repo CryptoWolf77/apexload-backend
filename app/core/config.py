@@ -111,6 +111,48 @@ class Settings:
         "yes",
         "on",
     }
+    legal_notification_email: str = os.getenv(
+        "LEGAL_NOTIFICATION_EMAIL",
+        "copyright@apexload.org",
+    )
+    legal_from_email: str = os.getenv(
+        "LEGAL_FROM_EMAIL",
+        "ApexLoad Legal <legal@apexload.org>",
+    )
+    legal_allowed_origins: list[str] = [
+        origin.strip()
+        for origin in os.getenv(
+            "LEGAL_ALLOWED_ORIGINS",
+            "https://apexload.org,https://www.apexload.org",
+        ).split(",")
+        if origin.strip()
+    ]
+    legal_trusted_proxy_cidrs: list[str] = [
+        cidr.strip()
+        for cidr in os.getenv("LEGAL_TRUSTED_PROXY_CIDRS", "").split(",")
+        if cidr.strip()
+    ]
+    legal_max_request_bytes: int = int(os.getenv("LEGAL_MAX_REQUEST_BYTES", "65536"))
+    # The longer names are the public deployment contract. Keep the earlier
+    # names as read-only compatibility aliases for existing Coolify installs.
+    legal_rate_limit_hour: int = int(
+        os.getenv("LEGAL_RATE_LIMIT_HOURLY", os.getenv("LEGAL_RATE_LIMIT_HOUR", "5"))
+    )
+    legal_rate_limit_day: int = int(
+        os.getenv("LEGAL_RATE_LIMIT_DAILY", os.getenv("LEGAL_RATE_LIMIT_DAY", "15"))
+    )
+    legal_duplicate_window_seconds: int = int(
+        os.getenv("LEGAL_DUPLICATE_WINDOW_SECONDS", "86400")
+    )
+    legal_pending_window_seconds: int = int(
+        os.getenv("LEGAL_PENDING_WINDOW_SECONDS", "300")
+    )
+    legal_min_form_seconds: int = int(os.getenv("LEGAL_MIN_FORM_SECONDS", "3"))
+    legal_clock_skew_seconds: int = int(os.getenv("LEGAL_CLOCK_SKEW_SECONDS", "300"))
+    legal_email_timeout_seconds: int = int(
+        os.getenv("LEGAL_EMAIL_TIMEOUT_SECONDS", "20")
+    )
+    legal_fingerprint_secret: str = os.getenv("LEGAL_FINGERPRINT_SECRET", "")
     ytdlp_update_policy: str = os.getenv("YTDLP_UPDATE_POLICY", "manual")
     ffmpeg_location: str = os.getenv("FFMPEG_LOCATION", "")
     youtube_auth_mode: str = os.getenv("YOUTUBE_AUTH_MODE", "none").lower()

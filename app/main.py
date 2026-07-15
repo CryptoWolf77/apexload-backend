@@ -10,6 +10,7 @@ from app.api.routes import (
     editor,
     files,
     health,
+    takedown,
 )
 from app.core.config import get_settings
 from app.services.instagram_cookie_health import (
@@ -19,6 +20,20 @@ from app.services.instagram_cookie_health import (
 )
 
 settings = get_settings()
+cors_origins = list(
+    dict.fromkeys(
+        origin
+        for origin in (
+            "https://apexload.org",
+            "https://www.apexload.org",
+            "https://api.apexload.org",
+            "http://localhost",
+            "http://127.0.0.1",
+            *settings.cors_origins,
+        )
+        if origin != "*"
+    )
+)
 
 app = FastAPI(
     title=settings.app_name,
@@ -28,16 +43,7 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    # TODO: Before production release, restrict CORS origins to official
-    # app/website domains only.
-    allow_origins=[
-        "https://apexload.org",
-        "https://www.apexload.org",
-        "https://api.apexload.org",
-        "http://localhost",
-        "http://127.0.0.1",
-        *settings.cors_origins,
-    ],
+    allow_origins=cors_origins,
     allow_origin_regex=r"http://(localhost|127\.0\.0\.1):\d+",
     allow_credentials=True,
     allow_methods=["*"],
@@ -52,6 +58,7 @@ app.include_router(files.router, prefix=settings.api_prefix)
 app.include_router(debug.router, prefix=f"{settings.api_prefix}/debug", tags=["debug"])
 app.include_router(admin_instagram.router)
 app.include_router(admin_youtube.router)
+app.include_router(takedown.router)
 
 
 @app.on_event("startup")

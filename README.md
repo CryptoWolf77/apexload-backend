@@ -59,6 +59,45 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000
 
 ## Endpoints
 
+### Public Takedown Request
+
+```http
+POST /v1/public/takedown
+Content-Type: application/json
+Origin: https://apexload.org
+```
+
+The endpoint sends the full report by SMTP and does not write the full payload
+to the application database or ordinary logs. It keeps only short-lived,
+keyed hashes for duplicate detection and per-instance rate limiting. The
+current in-memory limit is not shared across multiple backend instances; use a
+shared rate-limit store before horizontally scaling this endpoint.
+
+Coolify must configure SMTP plus these legal variables:
+
+```env
+LEGAL_NOTIFICATION_EMAIL=copyright@apexload.org
+LEGAL_FROM_EMAIL=ApexLoad Legal <legal@apexload.org>
+LEGAL_ALLOWED_ORIGINS=https://apexload.org,https://www.apexload.org
+LEGAL_TRUSTED_PROXY_CIDRS=<only reverse-proxy/Cloudflare CIDRs you operate>
+LEGAL_RATE_LIMIT_HOURLY=5
+LEGAL_RATE_LIMIT_DAILY=15
+LEGAL_FINGERPRINT_SECRET=<long-random-secret>
+```
+
+`LEGAL_TRUSTED_PROXY_CIDRS` is intentionally empty by default. The endpoint
+uses `CF-Connecting-IP` only when the immediate peer belongs to one of those
+configured networks; it never blindly trusts `X-Forwarded-For`.
+
+Use the browser-facing endpoint only after a controlled staging delivery test:
+
+```env
+VITE_TAKEDOWN_ENDPOINT=https://api.apexload.org/v1/public/takedown
+```
+
+Successful responses contain both `referenceId` and the temporary website
+compatibility field `reference` with the same opaque value.
+
 ### Health
 
 ```http
