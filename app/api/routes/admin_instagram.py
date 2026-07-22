@@ -157,6 +157,16 @@ async def instagram_safety_resume(
     return {"success": True, **instagram_safety_service.manual_resume()}
 
 
+@router.post("/admin/instagram/safety/clear")
+async def instagram_safety_clear_legacy(
+    request: Request,
+    authorization: str | None = Header(default=None),
+) -> dict[str, Any]:
+    require_admin_bearer(authorization)
+    enforce_admin_rate_limit(request, "instagram_safety_clear", 5, 600)
+    return {"success": True, **instagram_safety_service.manual_clear()}
+
+
 @router.get("/api/admin/instagram/auth-status")
 async def auth_status(
     request: Request,
@@ -209,6 +219,16 @@ async def validate_cookies(
         "message": status["reason"],
         **status,
     }
+
+
+@router.post("/api/admin/instagram/safety/clear")
+async def instagram_safety_clear(
+    request: Request,
+    x_admin_key: str | None = Header(default=None),
+) -> dict[str, Any]:
+    require_admin_key(x_admin_key)
+    enforce_admin_rate_limit(request, "instagram_safety_clear_api", 5, 600)
+    return {"success": True, **instagram_safety_service.manual_clear()}
 
 
 @router.delete("/api/admin/instagram/cookies")
@@ -264,6 +284,7 @@ async def instagram_admin_page() -> str:
       <button onclick="loadSafety()">Safety status</button>
       <button onclick="checkSafety()">Check now</button>
       <button class="danger" onclick="resumeSafety()">Resume manually</button>
+      <button class="danger" onclick="clearSafety()">Clear pause/counters</button>
     </section>
     <section>
       <h2>Upload Netscape cookies</h2>
@@ -290,6 +311,7 @@ async def instagram_admin_page() -> str:
     function loadSafety(){ api('/admin/instagram/safety/status'); }
     function checkSafety(){ api('/admin/instagram/safety/check', {method:'POST', body: JSON.stringify({})}); }
     function resumeSafety(){ api('/admin/instagram/safety/resume', {method:'POST', body: JSON.stringify({})}); }
+    function clearSafety(){ api('/admin/instagram/safety/clear', {method:'POST', body: JSON.stringify({})}); }
     async function uploadCookies(){
       const form = new FormData();
       const blob = new Blob([document.getElementById('cookies').value], {type: 'text/plain'});

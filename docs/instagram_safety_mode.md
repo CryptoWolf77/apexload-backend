@@ -17,8 +17,9 @@ Before Instagram analyze/download work, the backend:
 3. Acquires an Instagram-only concurrency guard.
 4. Runs the existing extraction/download logic.
 5. Records success or classifies failure.
-6. Activates cooldown when restriction, rate-limit, challenge, login, cookie, or
-   repeated unknown errors are detected.
+6. Records cookie-health warnings separately from real user-request failures.
+7. Activates cooldown only after repeated real Instagram analyze/download
+   failures reach `INSTAGRAM_FAILURE_THRESHOLD`.
 
 TikTok, YouTube, Facebook, Snapchat, X/Twitter, and other platforms are not
 limited by Instagram Safety Mode.
@@ -31,6 +32,13 @@ The classifier maps technical errors into safe categories:
 - `cookies_empty`
 - `cookies_expired`
 - `cookies_invalid`
+- `cookies_warning`
+- `cookies_invalid_real_request`
+- `health_warning`
+- `rate_limited`
+- `restricted`
+- `login_required`
+- `unknown_error`
 - `instagram_restricted`
 - `instagram_rate_limited`
 - `instagram_challenge_required`
@@ -41,6 +49,17 @@ The classifier maps technical errors into safe categories:
 
 Raw yt-dlp messages stay in backend logs/state as short sanitized technical
 reasons. Mobile users receive friendly temporary-unavailable messages.
+
+Cookie health checks are advisory. A failed scheduled/manual health check can
+mark Instagram as `degraded` with `cookies_warning` or `health_warning`, but it
+does not globally pause Instagram downloads by itself. Real successful
+Instagram analyze/download requests clear stale cookie-health warnings and can
+clear a stale cookie-only pause when the request proves the server session still
+works.
+
+Real Instagram analyze/download failures still count toward
+`INSTAGRAM_FAILURE_THRESHOLD`. Repeated login-required, rate-limit, restricted,
+challenge, or cookie/session failures then activate a full Instagram-only pause.
 
 ## Coolify Environment
 
@@ -99,8 +118,16 @@ curl -X POST -H "Authorization: Bearer $ADMIN_API_TOKEN" \
   https://api.apexload.org/admin/instagram/safety/resume
 ```
 
-Manual resume clears pause state after an admin confirms the Instagram account
-is okay.
+Manual clear:
+
+```bash
+curl -X POST -H "X-Admin-Key: $ADMIN_API_KEY" \
+  https://api.apexload.org/api/admin/instagram/safety/clear
+```
+
+Manual resume/clear resets Safety Mode pause state and counters after an admin
+confirms Instagram works. It does not delete cookies and does not disable Safety
+Mode.
 
 ## Email Alerts
 
@@ -116,6 +143,12 @@ Recovery email:
 - `ApexLoad Recovery: Instagram downloads are active again`
 
 Emails never include cookies or secrets.
+
+Activation emails include whether the pause was triggered by a real user
+request or a health-check path, the normalized reason category, pause expiry,
+failure count, and the admin clear endpoint to use after successful manual
+testing. Health-check-only warnings should be handled as degraded status rather
+than a 72-hour global pause.
 
 ## Recommended Action When Restriction Happens
 
