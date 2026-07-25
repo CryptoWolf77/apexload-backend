@@ -105,11 +105,16 @@ class InstagramDownloadSelectorTests(unittest.TestCase):
         )
 
         self.assertEqual(selector, "bv*+ba/b")
-        self.assertEqual(sort_expression, "res:1080,fps,br")
+        self.assertEqual(
+            sort_expression,
+            "res:1080,+codec:avc:m4a,fps,br",
+        )
         self.assertEqual(self.service._format_selector(item, "Instagram"), "bv*+ba/b")
         self.assertNotIn("height<=1080", " ".join(command))
         self.assertIn("--merge-output-format", command)
         self.assertIn("--remux-video", command)
+        self.assertIn("--concurrent-fragments", command)
+        self.assertEqual(command[command.index("--concurrent-fragments") + 1], "4")
 
     def test_each_requested_quality_uses_orientation_safe_sorting(self) -> None:
         for format_id, target in (
@@ -121,7 +126,10 @@ class InstagramDownloadSelectorTests(unittest.TestCase):
             with self.subTest(format_id=format_id):
                 item = SelectedDownloadItem(formatId=format_id, type="video")
                 sort_expression = self.service._instagram_cli_sort_expression(item)
-                self.assertEqual(sort_expression, f"res:{target},fps,br")
+                self.assertEqual(
+                    sort_expression,
+                    f"res:{target},+codec:avc:m4a,fps,br",
+                )
 
     def test_best_video_has_no_resolution_ceiling(self) -> None:
         item = SelectedDownloadItem(formatId="best", type="video")
@@ -133,8 +141,8 @@ class InstagramDownloadSelectorTests(unittest.TestCase):
         )
 
         self.assertEqual(selector, "bv*+ba/b")
-        self.assertIsNone(sort_expression)
-        self.assertNotIn("-S", command)
+        self.assertEqual(sort_expression, "+codec:avc:m4a,fps,br")
+        self.assertIn("-S", command)
 
     def test_audio_cli_behavior_is_unchanged(self) -> None:
         item = SelectedDownloadItem(formatId="mp3", type="audio")
@@ -151,6 +159,23 @@ class InstagramDownloadSelectorTests(unittest.TestCase):
         self.assertIn("--audio-format", command)
         self.assertNotIn("--remux-video", command)
         self.assertNotIn("-S", command)
+
+    def test_youtube_prefers_iphone_compatible_h264_and_m4a(self) -> None:
+        selector = self.service._youtube_format_selector(1080)
+
+        self.assertTrue(
+            selector.startswith(
+                "bestvideo[vcodec^=avc1][height<=1080]+bestaudio[ext=m4a]/"
+            )
+        )
+        self.assertIn(
+            "best[ext=mp4][vcodec^=avc1][height<=1080]",
+            selector,
+        )
+        self.assertIn(
+            "bestvideo[height<=1080]+bestaudio",
+            selector,
+        )
 
     def test_selected_format_diagnostics_capture_portrait_dimensions(self) -> None:
         format_id, width, height = self.service._instagram_selected_format_details(

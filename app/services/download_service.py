@@ -5,6 +5,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 import uuid
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -78,6 +79,7 @@ class DownloadService:
         )
 
     def process_job(self, job_id: str) -> None:
+        job_started_at = time.monotonic()
         job = self._get_job(job_id)
         if job is None:
             logger.error("Download job not found. job_id=%s", job_id)
@@ -138,7 +140,12 @@ class DownloadService:
             )
             if job.platform == "Instagram":
                 instagram_safety_service.finish_success(safety_decision)
-            logger.info("Download completed. job_id=%s files=%s", job_id, len(job.files))
+            logger.info(
+                "Download completed. job_id=%s files=%s elapsedMs=%s",
+                job_id,
+                len(job.files),
+                round((time.monotonic() - job_started_at) * 1000),
+            )
         except Exception as exc:
             logger.exception("Download failed. job_id=%s", job_id)
             classification = None
@@ -162,6 +169,11 @@ class DownloadService:
                     if classification and classification.category != "media_unavailable"
                     else self._error_code_for(exc)
                 ),
+            )
+            logger.info(
+                "Download failed timing. job_id=%s elapsedMs=%s",
+                job_id,
+                round((time.monotonic() - job_started_at) * 1000),
             )
 
     def get_status(self, job_id: str) -> DownloadStatusResponse:
@@ -416,19 +428,29 @@ class DownloadService:
             return self._youtube_format_selector(height)
 
         if shutil.which("ffmpeg"):
-            return f"bestvideo[height<={height}]+bestaudio/best[height<={height}]/best"
+            return self._compatible_video_selector(height)
         logger.info("ffmpeg not found. Using single-file format fallback.")
         return f"best[height<={height}]/best"
 
     def _youtube_format_selector(self, height: int | None) -> str:
-        if not height:
-            return "bestvideo+bestaudio/best[ext=mp4]/best"
-        # YouTube Shorts can omit an exact requested quality. Keep the requested
-        # ceiling, then fall through to muxed MP4/best so a missing 480p/720p
-        # format does not fail an otherwise downloadable clip.
+        return self._compatible_video_selector(height)
+
+    def _compatible_video_selector(self, height: int | None) -> str:
+        ceiling = f"[height<={height}]" if height else ""
+        avc_video = f"bestvideo[vcodec^=avc1]{ceiling}"
+        avc_muxed = f"best[ext=mp4][vcodec^=avc1]{ceiling}"
+        fallback_video = f"bestvideo{ceiling}"
+        fallback_muxed = f"best{ceiling}"
+        # Prefer an H.264 video track and AAC/M4A audio so the resulting MP4
+        # plays natively on iPhone. Keep broad fallbacks for sources that do
+        # not publish an AVC rendition; the iOS client then transcodes those
+        # uncommon VP9/AV1 files before adding them to the local library.
         return (
-            f"bestvideo[height<={height}]+bestaudio/"
-            f"best[height<={height}]/best[ext=mp4]/best"
+            f"{avc_video}+bestaudio[ext=m4a]/"
+            f"{avc_video}+bestaudio/"
+            f"{avc_muxed}/"
+            f"{fallback_video}+bestaudio/"
+            f"{fallback_muxed}/best"
         )
 
     def _download_instagram_with_cli(
@@ -469,6 +491,7 @@ class DownloadService:
         )
 
         before = set(job_dir.iterdir())
+        cli_started_at = time.monotonic()
         try:
             result = subprocess.run(
                 command,
@@ -508,6 +531,13 @@ class DownloadService:
                 result.stdout,
                 new_files,
             )
+        logger.info(
+            "Instagram CLI download finished: job_id=%s elapsedMs=%s "
+            "outputBytes=%s",
+            job.job_id,
+            round((time.monotonic() - cli_started_at) * 1000),
+            sum(path.stat().st_size for path in new_files),
+        )
         for path in new_files:
             self._register_file(job, path, "audio" if is_audio_item else item_type)
 
@@ -529,7 +559,12 @@ class DownloadService:
             "2160p": 2160,
         }
         target = resolution_map.get(self._format_id(item))
-        return f"res:{target},fps,br" if target else None
+        codec_preference = "+codec:avc:m4a"
+        return (
+            f"res:{target},{codec_preference},fps,br"
+            if target
+            else f"{codec_preference},fps,br"
+        )
 
     def _instagram_cli_command(
         self,
@@ -548,6 +583,8 @@ class DownloadService:
             cookiefile,
             "--impersonate",
             "chrome",
+            "--concurrent-fragments",
+            "4",
             "-f",
             cli_format,
         ]
