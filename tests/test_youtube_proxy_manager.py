@@ -11,9 +11,11 @@ from app.services.youtube_error_classifier import (
 )
 from app.services.youtube_proxy_manager import (
     ProxyHealth,
+    YouTubeProxyCapabilityUnavailableError,
     YouTubeProxyManager,
     normalize_proxy_entry,
     parse_proxy_list,
+    youtube_video_resolutions,
 )
 from app.services.ytdlp_options import apply_anonymous_youtube_proxy
 
@@ -274,6 +276,175 @@ def test_request_can_use_first_ready_proxy_while_prewarm_finishes() -> None:
         release_slow.set()
         requester.join(timeout=2)
         manager.stop_background()
+
+
+def test_video_resolutions_use_exact_orientation_independent_short_edge() -> None:
+    resolutions = youtube_video_resolutions(
+        {
+            "formats": [
+                {
+                    "url": "https://media.invalid/portrait-1080",
+                    "vcodec": "avc1",
+                    "width": 1080,
+                    "height": 1920,
+                },
+                {
+                    "url": "https://media.invalid/landscape-1080",
+                    "vcodec": "avc1",
+                    "width": 1920,
+                    "height": 1080,
+                },
+                {
+                    "url": "https://media.invalid/not-1080",
+                    "vcodec": "avc1",
+                    "width": 608,
+                    "height": 1080,
+                },
+                {
+                    "url": "https://media.invalid/audio",
+                    "vcodec": "none",
+                    "width": 2160,
+                    "height": 3840,
+                },
+            ]
+        }
+    )
+
+    assert resolutions == {608, 1080}
+
+
+def test_analyze_proven_capability_is_preferred_over_generic_proxy() -> None:
+    proxy_a = "socks5://8.8.8.8:1080"
+    proxy_b = "socks5://1.1.1.1:1080"
+    url = "https://www.youtube.com/shorts/target"
+
+    def unexpected_validation(_proxy: str, _url: str):
+        pytest.fail("cached analyze capability should avoid another validation")
+
+    manager = YouTubeProxyManager(
+        proxy_settings(),
+        capability_validator=unexpected_validation,
+    )
+    manager.report_success(proxy_a)
+    manager.report_success(proxy_b)
+    manager.record_capability(url, proxy_b, {480, 720, 1080})
+
+    assert manager.acquire(url, required_resolution=1080) == proxy_b
+    assert manager.cached_resolutions(url, proxy_b) == {480, 720, 1080}
+
+
+def test_healthy_lower_quality_proxy_is_rejected_for_required_resolution() -> None:
+    proxy_a = "socks5://8.8.8.8:1080"
+    proxy_b = "socks5://1.1.1.1:1080"
+    url = "https://www.youtube.com/watch?v=target"
+    validation_calls: list[tuple[str, str]] = []
+
+    def capability_validator(proxy: str, request_url: str):
+        validation_calls.append((proxy, request_url))
+        if proxy == proxy_a:
+            return {480}, 0.01, "success"
+        return {480, 720, 1080}, 0.01, "success"
+
+    manager = YouTubeProxyManager(
+        proxy_settings(),
+        capability_validator=capability_validator,
+    )
+    manager.report_success(proxy_a)
+    manager.report_success(proxy_b)
+    manager._load_candidates = lambda: []
+
+    assert manager.acquire(url, required_resolution=1080) == proxy_b
+    assert manager.cached_resolutions(url, proxy_a) == {480}
+    assert manager.cached_resolutions(url, proxy_b) == {480, 720, 1080}
+    assert {call[0] for call in validation_calls} == {proxy_a, proxy_b}
+    assert all(call[1] == url for call in validation_calls)
+
+
+def test_targeted_discovery_checks_fresh_proxy_after_cached_capability_miss() -> None:
+    proxy_a = "socks5://8.8.8.8:1080"
+    proxy_b = "socks5://1.1.1.1:1080"
+    url = "https://www.youtube.com/shorts/target"
+    validation_calls: list[str] = []
+
+    def capability_validator(proxy: str, _url: str):
+        validation_calls.append(proxy)
+        return {480, 720, 1080}, 0.01, "success"
+
+    manager = YouTubeProxyManager(
+        proxy_settings(),
+        capability_validator=capability_validator,
+    )
+    manager.report_success(proxy_a)
+    manager.record_capability(url, proxy_a, {480})
+    manager._load_candidates = lambda: [proxy_a, proxy_b]
+    manager._connectivity_check = lambda proxy: (proxy == proxy_b, "203.0.113.2")
+
+    assert manager.acquire(url, required_resolution=1080) == proxy_b
+    assert validation_calls == [proxy_b]
+
+
+def test_capabilities_are_url_specific_and_expire_with_health_cache() -> None:
+    current = [100.0]
+    proxy = "socks5://8.8.8.8:1080"
+    first_url = "https://www.youtube.com/watch?v=first"
+    second_url = "https://www.youtube.com/watch?v=second"
+    manager = YouTubeProxyManager(
+        proxy_settings(),
+        clock=lambda: current[0],
+        capability_validator=lambda *_args: ({480}, 0.01, "success"),
+    )
+    manager.report_success(proxy)
+    manager.record_capability(first_url, proxy, {1080})
+    manager._load_candidates = lambda: []
+
+    assert manager.acquire(first_url, required_resolution=1080) == proxy
+    with pytest.raises(YouTubeProxyCapabilityUnavailableError):
+        manager.acquire(second_url, required_resolution=1080)
+
+    current[0] += manager.settings.youtube_proxy_cache_ttl_seconds + 1
+    assert manager.cached_resolutions(first_url, proxy) is None
+
+
+def test_capability_discovery_is_single_flight() -> None:
+    settings = proxy_settings()
+    proxy = "socks5://8.8.8.8:1080"
+    validation_calls = 0
+    validation_lock = threading.Lock()
+
+    def capability_validator(_proxy: str, _url: str):
+        nonlocal validation_calls
+        with validation_lock:
+            validation_calls += 1
+        time.sleep(0.1)
+        return {1080}, 0.1, "success"
+
+    manager = YouTubeProxyManager(
+        settings,
+        capability_validator=capability_validator,
+    )
+    manager.report_success(proxy)
+    manager._load_candidates = lambda: []
+    barrier = threading.Barrier(3)
+    results: list[str] = []
+
+    def acquire() -> None:
+        barrier.wait()
+        results.append(
+            manager.acquire(
+                "https://www.youtube.com/watch?v=single-flight",
+                required_resolution=1080,
+            )
+        )
+
+    threads = [threading.Thread(target=acquire) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    barrier.wait()
+    for thread in threads:
+        thread.join(timeout=2)
+
+    assert results == [proxy, proxy]
+    assert validation_calls == 1
 
 
 @pytest.mark.skipif(

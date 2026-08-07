@@ -47,6 +47,7 @@ from app.services.youtube_error_classifier import (
     classify_youtube_error,
 )
 from app.services.youtube_proxy_manager import (
+    YouTubeProxyCapabilityUnavailableError,
     YouTubeProxyUnavailableError,
     youtube_proxy_manager,
 )
@@ -411,6 +412,9 @@ class DownloadService:
                 job, item, job_dir, download_url, output_template,
                 output_name, item_type, is_audio_item, base_progress, proxy_url,
             ),
+            required_resolution=(
+                None if is_audio_item else self._requested_video_resolution(item)
+            ),
         )
 
     def _download_youtube_thumbnail_with_failover(
@@ -469,6 +473,8 @@ class DownloadService:
         job_dir: Path,
         url: str,
         operation: Callable[[str | None], None],
+        *,
+        required_resolution: int | None = None,
     ) -> None:
         settings = get_settings()
         excluded: set[str] = set()
@@ -484,8 +490,25 @@ class DownloadService:
                 direct_pending = False
             else:
                 try:
-                    proxy_url = youtube_proxy_manager.acquire(url, excluded)
+                    proxy_url = youtube_proxy_manager.acquire(
+                        url,
+                        excluded=excluded,
+                        required_resolution=required_resolution,
+                    )
                     excluded.add(proxy_url)
+                except YouTubeProxyCapabilityUnavailableError as exc:
+                    last_error = YouTubeQualityMismatchError(
+                        "Requested format is not available after bounded "
+                        f"proxy capability discovery for {required_resolution}p."
+                    )
+                    logger.info(
+                        "youtube_proxy_capability_exhausted job_id=%s "
+                        "requiredResolution=%s reason=%s",
+                        job.job_id,
+                        required_resolution,
+                        type(exc).__name__,
+                    )
+                    break
                 except YouTubeProxyUnavailableError as exc:
                     last_error = exc
                     no_route = True
@@ -500,6 +523,7 @@ class DownloadService:
                 last_error = exc
                 classification = classify_youtube_error(exc)
                 if proxy_url:
+                    youtube_proxy_manager.forget_capability(url, proxy_url)
                     youtube_proxy_manager.report_failure(proxy_url, exc)
                 self._cleanup_attempt_files(job_dir, baseline)
                 self._lock_youtube_proxy(job, None, restarting=True)

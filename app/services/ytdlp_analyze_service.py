@@ -28,6 +28,7 @@ from app.services.youtube_error_classifier import (
 )
 from app.services.youtube_proxy_manager import (
     YouTubeProxyUnavailableError,
+    youtube_video_resolutions,
     youtube_proxy_manager,
 )
 from app.utils.platform_detector import detect_platform
@@ -544,11 +545,17 @@ class YtDlpAnalyzeService:
                 info = self._extract_info(url, youtube_proxy=proxy_url)
                 if proxy_url:
                     youtube_proxy_manager.report_success(proxy_url)
+                    youtube_proxy_manager.record_capability(
+                        url,
+                        proxy_url,
+                        youtube_video_resolutions(self._select_media_info(info)),
+                    )
                 return info, "yt_dlp_proxy" if proxy_url else "yt_dlp"
             except AnalyzeServiceError as exc:
                 last_raw = exc.raw_message
                 last_classification = classify_youtube_error(last_raw)
                 if proxy_url:
+                    youtube_proxy_manager.forget_capability(url, proxy_url)
                     youtube_proxy_manager.report_failure(proxy_url, last_raw)
                 if last_classification.verify_with_another_proxy:
                     unavailable_observations += 1
@@ -1645,11 +1652,12 @@ class YtDlpAnalyzeService:
         thumbnail: str,
         platform: str = "",
     ) -> list[FormatOption]:
-        resolutions = (
-            self._available_resolutions(info)
-            if platform in {"Instagram", "YouTube Shorts"}
-            else self._available_heights(info)
-        )
+        if platform == "YouTube Shorts":
+            resolutions = youtube_video_resolutions(info)
+        elif platform == "Instagram":
+            resolutions = self._available_resolutions(info)
+        else:
+            resolutions = self._available_heights(info)
         duration = info.get("duration")
         snapchat_has_downloadable_video = self._has_video_signals(info) or (
             isinstance(duration, (int, float)) and duration > 0
@@ -1686,10 +1694,22 @@ class YtDlpAnalyzeService:
                 ),
             ]
         return [
-            self._video_format("480p", "MP4 480p", 480, False, resolutions),
-            self._video_format("720p", "MP4 720p", 720, False, resolutions),
-            self._video_format("1080p", "MP4 1080p", 1080, True, resolutions),
-            self._video_format("2160p", "MP4 2160p / 4K", 2160, True, resolutions),
+            self._video_format(
+                "480p", "MP4 480p", 480, False, resolutions,
+                exact=platform == "YouTube Shorts",
+            ),
+            self._video_format(
+                "720p", "MP4 720p", 720, False, resolutions,
+                exact=platform == "YouTube Shorts",
+            ),
+            self._video_format(
+                "1080p", "MP4 1080p", 1080, True, resolutions,
+                exact=platform == "YouTube Shorts",
+            ),
+            self._video_format(
+                "2160p", "MP4 2160p / 4K", 2160, True, resolutions,
+                exact=platform == "YouTube Shorts",
+            ),
             FormatOption(
                 id="mp3",
                 label="MP3 Audio",
@@ -1768,8 +1788,14 @@ class YtDlpAnalyzeService:
         resolution: int,
         premium: bool,
         resolutions: set[int],
+        *,
+        exact: bool = False,
     ) -> FormatOption:
-        available = any(item >= resolution for item in resolutions)
+        available = (
+            resolution in resolutions
+            if exact
+            else any(item >= resolution for item in resolutions)
+        )
         return FormatOption(
             id=format_id,
             label=label,

@@ -5,11 +5,15 @@ import yt_dlp
 
 from app.models.download_models import DownloadRequest, SelectedDownloadItem
 from app.services import download_service as download_module
+from app.services import ytdlp_analyze_service as analyze_module
 from app.services.download_service import DownloadJob, DownloadService
 from app.services.youtube_error_classifier import (
     YouTubeErrorCode,
     YouTubeOperationError,
     YouTubeQualityMismatchError,
+)
+from app.services.youtube_proxy_manager import (
+    YouTubeProxyCapabilityUnavailableError,
 )
 from app.services.ytdlp_analyze_service import YtDlpAnalyzeService
 
@@ -127,6 +131,7 @@ def test_youtube_analyze_uses_the_same_short_edge_resolution() -> None:
             "formats": [
                 {
                     "format_id": "portrait-avc",
+                    "url": "https://media.invalid/portrait-avc",
                     "width": 1080,
                     "height": 1920,
                     "vcodec": "avc1.640028",
@@ -141,6 +146,81 @@ def test_youtube_analyze_uses_the_same_short_edge_resolution() -> None:
 
     assert availability["1080p"] is True
     assert availability["2160p"] is False
+
+
+def test_youtube_analyze_does_not_treat_4k_as_an_exact_1080_rendition() -> None:
+    service = YtDlpAnalyzeService()
+    formats = service._video_formats(
+        {
+            "formats": [
+                {
+                    "format_id": "portrait-4k",
+                    "url": "https://media.invalid/portrait-4k",
+                    "width": 2160,
+                    "height": 3840,
+                    "vcodec": "avc1.640033",
+                    "ext": "mp4",
+                }
+            ]
+        },
+        "",
+        "YouTube Shorts",
+    )
+    availability = {item.id: item.available for item in formats}
+
+    assert availability["1080p"] is False
+    assert availability["2160p"] is True
+
+
+def test_analyze_records_exact_resolutions_for_the_proxy_it_used(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = YtDlpAnalyzeService()
+    settings = analyze_module.get_settings()
+    proxy_b = "socks5://1.1.1.1:1080"
+    info = {
+        "formats": [
+            {
+                "url": f"https://media.invalid/{resolution}",
+                "vcodec": "avc1",
+                "width": resolution,
+                "height": round(resolution * 16 / 9),
+            }
+            for resolution in (480, 720, 1080)
+        ]
+    }
+    recorded: list[tuple[str, str, set[int]]] = []
+    monkeypatch.setattr(settings, "youtube_proxy_enabled", True)
+    monkeypatch.setattr(settings, "youtube_proxy_direct_first", False)
+    monkeypatch.setattr(
+        analyze_module.youtube_proxy_manager,
+        "acquire",
+        lambda *_args, **_kwargs: proxy_b,
+    )
+    monkeypatch.setattr(
+        analyze_module.youtube_proxy_manager,
+        "report_success",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        analyze_module.youtube_proxy_manager,
+        "record_capability",
+        lambda url, proxy, resolutions: recorded.append(
+            (url, proxy, resolutions)
+        ),
+    )
+
+    def extract(_url: str, *, youtube_proxy: str | None = None) -> dict:
+        assert youtube_proxy == proxy_b
+        return info
+
+    monkeypatch.setattr(service, "_extract_info", extract)
+
+    result, source = service._extract_youtube_info(YOUTUBE_URL)
+
+    assert result is info
+    assert source == "yt_dlp_proxy"
+    assert recorded == [(YOUTUBE_URL, proxy_b, {480, 720, 1080})]
 
 
 def test_youtube_download_options_use_res_sort_and_mp4_output(
@@ -285,11 +365,103 @@ def test_quality_mismatch_retries_routes_then_returns_format_unavailable(
             tmp_path,
             YOUTUBE_URL,
             fail_quality,
+            required_resolution=1080,
         )
 
     assert len(acquired) == 2
     assert raised.value.classification.code == YouTubeErrorCode.FORMAT_UNAVAILABLE
     assert list(tmp_path.iterdir()) == []
+
+
+def test_analyze_proven_route_failure_continues_with_capability_aware_acquire(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    service = DownloadService()
+    item = make_item("1080p")
+    job = make_job(item)
+    settings = download_module.get_settings()
+    proxy_b = "socks5://1.1.1.1:1080"
+    proxy_c = "socks5://8.8.8.8:1080"
+    routes = iter([proxy_b, proxy_c])
+    acquisitions: list[tuple[str, int | None, set[str]]] = []
+    forgotten: list[str] = []
+
+    monkeypatch.setattr(settings, "youtube_proxy_direct_first", False)
+    monkeypatch.setattr(settings, "youtube_proxy_max_job_attempts", 2)
+
+    def acquire(
+        url: str,
+        excluded: set[str] | None = None,
+        *,
+        required_resolution: int | None = None,
+    ) -> str:
+        acquisitions.append((url, required_resolution, set(excluded or set())))
+        return next(routes)
+
+    monkeypatch.setattr(download_module.youtube_proxy_manager, "acquire", acquire)
+    monkeypatch.setattr(
+        download_module.youtube_proxy_manager,
+        "forget_capability",
+        lambda _url, proxy: forgotten.append(proxy),
+    )
+    monkeypatch.setattr(
+        download_module.youtube_proxy_manager,
+        "report_failure",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        download_module.youtube_proxy_manager,
+        "report_success",
+        lambda *_args, **_kwargs: None,
+    )
+
+    def operation(proxy: str | None) -> None:
+        if proxy == proxy_b:
+            raise RuntimeError("connection refused")
+
+    service._run_youtube_with_failover(
+        job,
+        tmp_path,
+        YOUTUBE_URL,
+        operation,
+        required_resolution=1080,
+    )
+
+    assert acquisitions == [
+        (YOUTUBE_URL, 1080, set()),
+        (YOUTUBE_URL, 1080, {proxy_b}),
+    ]
+    assert forgotten == [proxy_b]
+
+
+def test_capability_search_exhaustion_returns_format_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    service = DownloadService()
+    item = make_item("1080p")
+    job = make_job(item)
+    settings = download_module.get_settings()
+    monkeypatch.setattr(settings, "youtube_proxy_direct_first", False)
+    monkeypatch.setattr(
+        download_module.youtube_proxy_manager,
+        "acquire",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            YouTubeProxyCapabilityUnavailableError("no capable proxy")
+        ),
+    )
+
+    with pytest.raises(YouTubeOperationError) as raised:
+        service._run_youtube_with_failover(
+            job,
+            tmp_path,
+            YOUTUBE_URL,
+            lambda _proxy: pytest.fail("download should not start"),
+            required_resolution=1080,
+        )
+
+    assert raised.value.classification.code == YouTubeErrorCode.FORMAT_UNAVAILABLE
 
 
 def test_non_youtube_selector_is_unchanged(monkeypatch: pytest.MonkeyPatch) -> None:

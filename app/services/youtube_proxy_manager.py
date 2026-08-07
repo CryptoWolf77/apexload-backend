@@ -11,16 +11,21 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, replace
 from typing import Callable
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 from urllib.request import Request, urlopen
 
 from app.core.config import Settings, get_settings
 from app.services.youtube_error_classifier import classify_youtube_error
 
 logger = logging.getLogger("apexload.youtube_proxy")
+MAX_CAPABILITY_CACHE_ENTRIES = 2_048
 
 
 class YouTubeProxyUnavailableError(RuntimeError):
+    pass
+
+
+class YouTubeProxyCapabilityUnavailableError(YouTubeProxyUnavailableError):
     pass
 
 
@@ -49,6 +54,15 @@ class ProxyHealth:
             and now - self.last_success <= ttl
             and now >= self.cooldown_until
         )
+
+
+@dataclass(frozen=True, slots=True)
+class ProxyCapability:
+    resource_key: str
+    proxy_url: str
+    available_resolutions: frozenset[int]
+    validated_at: float
+    latency: float | None = None
 
 
 def normalize_proxy_entry(value: str) -> str | None:
@@ -87,11 +101,18 @@ class YouTubeProxyManager:
         *,
         clock: Callable[[], float] = time.time,
         validator: Callable[[str, str], tuple[bool, float, str]] | None = None,
+        capability_validator: Callable[
+            [str, str], tuple[set[int], float, str]
+        ] | None = None,
     ) -> None:
         self.settings = settings or get_settings()
         self._clock = clock
         self._validator = validator or self._validate_youtube
+        self._capability_validator = (
+            capability_validator or self._validate_youtube_capability
+        )
         self._records: dict[str, ProxyHealth] = {}
+        self._capabilities: dict[tuple[str, str], ProxyCapability] = {}
         self._condition = threading.Condition(threading.RLock())
         self._discovery_running = False
         self._source_cache: tuple[float, list[str]] | None = None
@@ -159,12 +180,24 @@ class YouTubeProxyManager:
                 self._maintenance_url = url
         self._wake_event.set()
 
-    def acquire(self, url: str, excluded: set[str] | None = None) -> str:
+    def acquire(
+        self,
+        url: str,
+        excluded: set[str] | None = None,
+        *,
+        required_resolution: int | None = None,
+    ) -> str:
         if not _is_youtube_url(url):
             raise YouTubeProxyUnavailableError("Proxy manager accepts only YouTube URLs")
+        if required_resolution is not None and required_resolution <= 0:
+            raise ValueError("required_resolution must be positive")
         excluded = excluded or set()
         with self._condition:
-            selected = self._choose_healthy(excluded)
+            selected = (
+                self._choose_capable(url, required_resolution, excluded)
+                if required_resolution is not None
+                else self._choose_healthy(excluded)
+            )
             if selected:
                 selected_url = selected.proxy_url
                 needs_replenishment = self._maintenance_healthy_count_locked() < self.settings.youtube_proxy_pool_target
@@ -177,11 +210,23 @@ class YouTubeProxyManager:
                 self._condition.wait_for(
                     lambda: (
                         not self._discovery_running
-                        or self._has_healthy_locked(excluded)
+                        or (
+                            self._has_capable_locked(
+                                url,
+                                required_resolution,
+                                excluded,
+                            )
+                            if required_resolution is not None
+                            else self._has_healthy_locked(excluded)
+                        )
                     ),
                     timeout=wait_seconds,
                 )
-                selected = self._choose_healthy(excluded)
+                selected = (
+                    self._choose_capable(url, required_resolution, excluded)
+                    if required_resolution is not None
+                    else self._choose_healthy(excluded)
+                )
                 if selected:
                     return selected.proxy_url
                 if self._discovery_running:
@@ -189,18 +234,84 @@ class YouTubeProxyManager:
             self._discovery_running = True
 
         try:
-            self._discover(url, excluded)
+            if required_resolution is not None:
+                self._discover_capability(url, required_resolution, excluded)
+            else:
+                self._discover(url, excluded)
         finally:
             with self._condition:
                 self._discovery_running = False
                 self._condition.notify_all()
 
         with self._condition:
-            selected = self._choose_healthy(excluded)
+            selected = (
+                self._choose_capable(url, required_resolution, excluded)
+                if required_resolution is not None
+                else self._choose_healthy(excluded)
+            )
             if not selected:
                 logger.warning("youtube_proxy_exhausted")
+                if required_resolution is not None:
+                    raise YouTubeProxyCapabilityUnavailableError(
+                        "No validated YouTube proxy exposes the requested resolution"
+                    )
                 raise YouTubeProxyUnavailableError("No validated YouTube proxy is available")
             return selected.proxy_url
+
+    def record_capability(
+        self,
+        url: str,
+        proxy_url: str,
+        available_resolutions: set[int],
+        latency: float | None = None,
+    ) -> None:
+        now = self._clock()
+        resource_key = _youtube_resource_key(url)
+        resolutions = frozenset(
+            value
+            for value in available_resolutions
+            if isinstance(value, int) and not isinstance(value, bool) and value > 0
+        )
+        capability = ProxyCapability(
+            resource_key=resource_key,
+            proxy_url=proxy_url,
+            available_resolutions=resolutions,
+            validated_at=now,
+            latency=latency,
+        )
+        with self._condition:
+            self._prune_capabilities_locked(now)
+            capability_key = (resource_key, proxy_url)
+            if (
+                capability_key not in self._capabilities
+                and len(self._capabilities) >= MAX_CAPABILITY_CACHE_ENTRIES
+            ):
+                oldest_key = min(
+                    self._capabilities,
+                    key=lambda key: self._capabilities[key].validated_at,
+                )
+                self._capabilities.pop(oldest_key, None)
+            self._capabilities[capability_key] = capability
+            self._condition.notify_all()
+        logger.info(
+            "youtube_proxy_capability_recorded proxyId=%s resolutions=%s",
+            self._proxy_id(proxy_url),
+            sorted(resolutions),
+        )
+
+    def cached_resolutions(self, url: str, proxy_url: str) -> set[int] | None:
+        now = self._clock()
+        with self._condition:
+            self._prune_capabilities_locked(now)
+            capability = self._capabilities.get(
+                (_youtube_resource_key(url), proxy_url)
+            )
+            return set(capability.available_resolutions) if capability else None
+
+    def forget_capability(self, url: str, proxy_url: str) -> None:
+        with self._condition:
+            self._capabilities.pop((_youtube_resource_key(url), proxy_url), None)
+            self._condition.notify_all()
 
     def report_success(self, proxy_url: str, latency: float | None = None) -> None:
         now = self._clock()
@@ -255,6 +366,42 @@ class YouTubeProxyManager:
         logger.info("youtube_proxy_selected proxyId=%s", self._proxy_id(selected.proxy_url))
         return selected
 
+    def _choose_capable(
+        self,
+        url: str,
+        required_resolution: int,
+        excluded: set[str],
+    ) -> ProxyHealth | None:
+        now = self._clock()
+        self._prune_capabilities_locked(now)
+        resource_key = _youtube_resource_key(url)
+        candidates = [
+            record
+            for record in self._records.values()
+            if record.proxy_url not in excluded
+            and record.is_healthy(now, self.settings.youtube_proxy_cache_ttl_seconds)
+            and (
+                capability := self._capabilities.get(
+                    (resource_key, record.proxy_url)
+                )
+            ) is not None
+            and required_resolution in capability.available_resolutions
+        ]
+        if not candidates:
+            logger.info(
+                "youtube_proxy_capability_miss requiredResolution=%s",
+                required_resolution,
+            )
+            return None
+        candidates.sort(key=lambda item: item.score(now), reverse=True)
+        selected = candidates[0]
+        logger.info(
+            "youtube_proxy_capability_hit proxyId=%s requiredResolution=%s",
+            self._proxy_id(selected.proxy_url),
+            required_resolution,
+        )
+        return selected
+
     def _healthy_count_locked(self) -> int:
         now = self._clock()
         return sum(
@@ -269,6 +416,37 @@ class YouTubeProxyManager:
             and record.is_healthy(now, self.settings.youtube_proxy_cache_ttl_seconds)
             for record in self._records.values()
         )
+
+    def _has_capable_locked(
+        self,
+        url: str,
+        required_resolution: int,
+        excluded: set[str],
+    ) -> bool:
+        now = self._clock()
+        self._prune_capabilities_locked(now)
+        resource_key = _youtube_resource_key(url)
+        return any(
+            record.proxy_url not in excluded
+            and record.is_healthy(now, self.settings.youtube_proxy_cache_ttl_seconds)
+            and (
+                capability := self._capabilities.get(
+                    (resource_key, record.proxy_url)
+                )
+            ) is not None
+            and required_resolution in capability.available_resolutions
+            for record in self._records.values()
+        )
+
+    def _prune_capabilities_locked(self, now: float) -> None:
+        ttl = self.settings.youtube_proxy_cache_ttl_seconds
+        expired = [
+            key
+            for key, capability in self._capabilities.items()
+            if now - capability.validated_at > ttl
+        ]
+        for key in expired:
+            self._capabilities.pop(key, None)
 
     def _maintenance_healthy_count_locked(self) -> int:
         maintenance_ttl = max(
@@ -400,6 +578,170 @@ class YouTubeProxyManager:
         logger.info("proxy_pool_refresh_completed candidates=%s connectivity=%s healthy=%s elapsedMs=%s", len(candidates), len(connectivity), successes, round((time.monotonic() - started) * 1000))
         return successes
 
+    def _discover_capability(
+        self,
+        url: str,
+        required_resolution: int,
+        excluded: set[str],
+    ) -> bool:
+        started = time.monotonic()
+        logger.info(
+            "youtube_proxy_capability_discovery_started requiredResolution=%s",
+            required_resolution,
+        )
+        resource_key = _youtube_resource_key(url)
+        with self._condition:
+            now = self._clock()
+            self._prune_capabilities_locked(now)
+            healthy_candidates = [
+                record
+                for record in self._records.values()
+                if record.proxy_url not in excluded
+                and record.is_healthy(
+                    now,
+                    self.settings.youtube_proxy_cache_ttl_seconds,
+                )
+                and (resource_key, record.proxy_url) not in self._capabilities
+            ]
+        healthy_candidates.sort(key=lambda item: item.score(now), reverse=True)
+        checked = {record.proxy_url for record in healthy_candidates}
+        if self._validate_capability_candidates(
+            url,
+            required_resolution,
+            [(record.proxy_url, record.last_exit_ip) for record in healthy_candidates],
+        ):
+            return True
+
+        with self._condition:
+            known_misses = {
+                capability.proxy_url
+                for capability_key, capability in self._capabilities.items()
+                if capability_key[0] == resource_key
+                and required_resolution not in capability.available_resolutions
+            }
+        candidates = [
+            proxy
+            for proxy in self._load_candidates()
+            if proxy not in excluded
+            and proxy not in checked
+            and proxy not in known_misses
+        ]
+        random.shuffle(candidates)
+        candidates = candidates[: self.settings.youtube_proxy_max_candidates]
+        desired = min(
+            len(candidates),
+            max(
+                self.settings.youtube_proxy_validation_concurrency,
+                self.settings.youtube_proxy_max_job_attempts * 3,
+            ),
+        )
+        connectivity = self._targeted_connectivity_candidates(candidates, desired)
+        found = self._validate_capability_candidates(
+            url,
+            required_resolution,
+            connectivity,
+        )
+        logger.info(
+            "youtube_proxy_capability_discovery_completed requiredResolution=%s "
+            "healthyCandidates=%s freshCandidates=%s connected=%s found=%s elapsedMs=%s",
+            required_resolution,
+            len(healthy_candidates),
+            len(candidates),
+            len(connectivity),
+            found,
+            round((time.monotonic() - started) * 1000),
+        )
+        return found
+
+    def _targeted_connectivity_candidates(
+        self,
+        candidates: list[str],
+        desired: int,
+    ) -> list[tuple[str, str | None]]:
+        if desired <= 0:
+            return []
+        connectivity: list[tuple[str, str | None]] = []
+        with ThreadPoolExecutor(
+            max_workers=self.settings.youtube_proxy_health_concurrency
+        ) as executor:
+            futures = {
+                executor.submit(self._connectivity_check, proxy): proxy
+                for proxy in candidates
+            }
+            for future in as_completed(futures):
+                if self._stop_event.is_set():
+                    for pending in futures:
+                        pending.cancel()
+                    break
+                proxy = futures[future]
+                try:
+                    passed, exit_ip = future.result()
+                except Exception:
+                    passed, exit_ip = False, None
+                if passed:
+                    connectivity.append((proxy, exit_ip))
+                    if len(connectivity) >= desired:
+                        for pending in futures:
+                            pending.cancel()
+                        break
+        return connectivity
+
+    def _validate_capability_candidates(
+        self,
+        url: str,
+        required_resolution: int,
+        candidates: list[tuple[str, str | None]],
+    ) -> bool:
+        if not candidates:
+            return False
+        found = False
+        with ThreadPoolExecutor(
+            max_workers=self.settings.youtube_proxy_validation_concurrency
+        ) as executor:
+            futures = {
+                executor.submit(self._capability_validator, proxy, url): (
+                    proxy,
+                    exit_ip,
+                )
+                for proxy, exit_ip in candidates
+            }
+            for future in as_completed(futures):
+                if self._stop_event.is_set():
+                    for pending in futures:
+                        pending.cancel()
+                    break
+                proxy, exit_ip = futures[future]
+                try:
+                    resolutions, latency, status = future.result()
+                except Exception as exc:
+                    resolutions, latency, status = set(), 0.0, str(exc)
+                self.record_capability(url, proxy, resolutions, latency)
+                if resolutions:
+                    self.report_success(proxy, latency)
+                    with self._condition:
+                        self._records[proxy].last_exit_ip = exit_ip
+                else:
+                    self.report_failure(proxy, status)
+                if required_resolution in resolutions:
+                    logger.info(
+                        "youtube_proxy_resolution_validation_passed "
+                        "proxyId=%s requiredResolution=%s",
+                        self._proxy_id(proxy),
+                        required_resolution,
+                    )
+                    found = True
+                    for pending in futures:
+                        pending.cancel()
+                    break
+                logger.info(
+                    "youtube_proxy_resolution_validation_failed "
+                    "proxyId=%s requiredResolution=%s availableResolutions=%s",
+                    self._proxy_id(proxy),
+                    required_resolution,
+                    sorted(resolutions),
+                )
+        return found
+
     def _load_candidates(self) -> list[str]:
         now = self._clock()
         with self._condition:
@@ -494,6 +836,38 @@ class YouTubeProxyManager:
         except Exception as exc:
             return False, time.monotonic() - started, str(exc)
 
+    def _validate_youtube_capability(
+        self,
+        proxy_url: str,
+        url: str,
+    ) -> tuple[set[int], float, str]:
+        started = time.monotonic()
+        try:
+            import yt_dlp
+            from app.services.ytdlp_options import (
+                apply_anonymous_youtube_proxy,
+                build_ytdlp_options,
+            )
+
+            options = build_ytdlp_options(
+                "YouTube Shorts",
+                "validate",
+                {
+                    "socket_timeout": self.settings.youtube_proxy_validation_timeout,
+                    "retries": 0,
+                    "extractor_retries": 0,
+                },
+                anonymous_youtube=True,
+            )
+            apply_anonymous_youtube_proxy(options, proxy_url)
+            with yt_dlp.YoutubeDL(options) as ydl:
+                info = ydl.extract_info(url, download=False)
+            resolutions = youtube_video_resolutions(info)
+            status = "success" if resolutions else "no usable video resolutions"
+            return resolutions, time.monotonic() - started, status
+        except Exception as exc:
+            return set(), time.monotonic() - started, str(exc)
+
     @staticmethod
     def _proxy_id(proxy_url: str) -> str:
         # Logs retain correlation without publishing the complete route.
@@ -522,6 +896,58 @@ def _is_youtube_url(url: str) -> bool:
             or host.endswith(".youtu.be")
         )
     )
+
+
+def _youtube_resource_key(url: str) -> str:
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").lower()
+    video_id: str | None = None
+    if host == "youtu.be" or host.endswith(".youtu.be"):
+        video_id = next((part for part in parsed.path.split("/") if part), None)
+    elif host == "youtube.com" or host.endswith(".youtube.com"):
+        if parsed.path.rstrip("/") == "/watch":
+            video_id = (parse_qs(parsed.query).get("v") or [None])[0]
+        else:
+            parts = [part for part in parsed.path.split("/") if part]
+            if len(parts) >= 2 and parts[0].lower() in {
+                "shorts",
+                "embed",
+                "live",
+            }:
+                video_id = parts[1]
+    if video_id:
+        return f"video:{video_id}"
+    query = f"?{parsed.query}" if parsed.query else ""
+    return f"url:{parsed.scheme.lower()}://{host}{parsed.path}{query}"
+
+
+def youtube_video_resolutions(info: object) -> set[int]:
+    if not isinstance(info, dict):
+        return set()
+    formats = info.get("formats")
+    if not isinstance(formats, list):
+        return set()
+    resolutions: set[int] = set()
+    for item in formats:
+        if not isinstance(item, dict) or not item.get("url"):
+            continue
+        if str(item.get("vcodec") or "").lower() in {"", "none"}:
+            continue
+        width = _positive_dimension(item.get("width"))
+        height = _positive_dimension(item.get("height"))
+        if width is not None and height is not None:
+            resolutions.add(min(width, height))
+    return resolutions
+
+
+def _positive_dimension(value: object) -> int | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        dimension = int(float(value))
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return dimension if dimension > 0 else None
 
 
 youtube_proxy_manager = YouTubeProxyManager()
