@@ -12,6 +12,10 @@ class Settings:
     api_prefix: str = "/api"
     api_key: str | None = os.getenv("API_KEY")
     environment: str = os.getenv("ENVIRONMENT", "development")
+    play_reviewer_access_code: str = os.getenv(
+        "PLAY_REVIEWER_ACCESS_CODE",
+        "",
+    ).strip()
     use_mock_analyze_fallback: bool = (
         os.getenv("USE_MOCK_ANALYZE_FALLBACK", "true").lower()
         in {"1", "true", "yes", "on"}

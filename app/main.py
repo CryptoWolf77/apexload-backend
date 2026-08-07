@@ -11,6 +11,7 @@ from app.api.routes import (
     editor,
     files,
     health,
+    reviewer_access,
     takedown,
 )
 from app.core.config import get_settings
@@ -53,6 +54,7 @@ app.add_middleware(
 )
 
 app.include_router(health.router, prefix=settings.api_prefix)
+app.include_router(reviewer_access.router, prefix=settings.api_prefix)
 app.include_router(analyze.router, prefix=settings.api_prefix)
 app.include_router(download.router, prefix=settings.api_prefix)
 app.include_router(editor.router, prefix=settings.api_prefix)
