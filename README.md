@@ -440,6 +440,15 @@ steps.
 
 ## YouTube Cookiefile Operations
 
+Production YouTube egress now uses an anonymous, YouTube-only SOCKS5 manager and
+a persistent BgUtils HTTP PO-token provider. Setup, security constraints,
+environment variables, health checks, Coolify steps, and troubleshooting are in
+[`docs/youtube_proxy_manager.md`](docs/youtube_proxy_manager.md).
+
+Do not combine public proxy mode with authenticated YouTube cookies. For the
+current challenged production IP, use `YOUTUBE_PROXY_ENABLED=true`,
+`YOUTUBE_PROXY_DIRECT_FIRST=false`, and `YOUTUBE_AUTH_MODE=none`.
+
 Some YouTube and YouTube Shorts links may require sign-in verification. ApexLoad
 supports a separate YouTube Netscape cookie file so this can be fixed without
 affecting Instagram auth.

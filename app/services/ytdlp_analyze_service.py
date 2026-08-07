@@ -18,8 +18,17 @@ from app.services.youtube_auth_service import (
     configured_youtube_cookiefile,
 )
 from app.services.ytdlp_options import (
+    apply_anonymous_youtube_proxy,
     build_ytdlp_options,
     configured_instagram_cookiefile,
+)
+from app.services.youtube_error_classifier import (
+    YouTubeErrorClassification,
+    classify_youtube_error,
+)
+from app.services.youtube_proxy_manager import (
+    YouTubeProxyUnavailableError,
+    youtube_proxy_manager,
 )
 from app.utils.platform_detector import detect_platform
 
@@ -98,6 +107,13 @@ class YouTubeAuthRequiredError(AnalyzeServiceError):
         "YouTube requires sign-in verification. Please refresh YouTube cookies "
         "from the admin panel."
     )
+
+
+class YouTubeAnalyzeError(AnalyzeServiceError):
+    def __init__(self, classification: YouTubeErrorClassification, raw_message: str):
+        self.classification = classification
+        self.error = classification.code.value
+        super().__init__(message=classification.user_message, raw_message=raw_message)
 
 
 class YtDlpAnalyzeService:
@@ -496,15 +512,58 @@ class YtDlpAnalyzeService:
         ) from last_error
 
     def _extract_youtube_info(self, url: str) -> tuple[dict, str]:
-        try:
-            source = "yt_dlp_cookies" if self._youtube_cookiefile() else "yt_dlp"
-            return self._extract_info(url), source
-        except YouTubeAuthRequiredError:
-            raise
-        except AnalyzeServiceError as exc:
-            if not self._is_youtube_auth_error(exc.raw_message):
+        settings = get_settings()
+        if not settings.youtube_proxy_enabled:
+            try:
+                source = "yt_dlp_cookies" if self._youtube_cookiefile() else "yt_dlp"
+                return self._extract_info(url), source
+            except YouTubeAuthRequiredError:
                 raise
-            raise YouTubeAuthRequiredError(raw_message=exc.raw_message) from exc
+            except AnalyzeServiceError as exc:
+                raise YouTubeAnalyzeError(
+                    classify_youtube_error(exc.raw_message), exc.raw_message
+                ) from exc
+
+        excluded: set[str] = set()
+        direct_pending = settings.youtube_proxy_direct_first
+        unavailable_observations = 0
+        last_classification = classify_youtube_error("proxy unavailable")
+        last_raw = "No YouTube route was available"
+        for _attempt in range(settings.youtube_proxy_max_job_attempts):
+            proxy_url: str | None = None
+            if direct_pending:
+                direct_pending = False
+            else:
+                try:
+                    proxy_url = youtube_proxy_manager.acquire(url, excluded)
+                    excluded.add(proxy_url)
+                except YouTubeProxyUnavailableError as exc:
+                    last_raw = str(exc)
+                    break
+            try:
+                info = self._extract_info(url, youtube_proxy=proxy_url)
+                if proxy_url:
+                    youtube_proxy_manager.report_success(proxy_url)
+                return info, "yt_dlp_proxy" if proxy_url else "yt_dlp"
+            except AnalyzeServiceError as exc:
+                last_raw = exc.raw_message
+                last_classification = classify_youtube_error(last_raw)
+                if proxy_url:
+                    youtube_proxy_manager.report_failure(proxy_url, last_raw)
+                if last_classification.verify_with_another_proxy:
+                    unavailable_observations += 1
+                    if unavailable_observations < 2:
+                        continue
+                if not last_classification.retryable and not last_classification.verify_with_another_proxy:
+                    break
+                logger.info(
+                    "youtube_proxy_retry operation=analyze attempt=%s code=%s",
+                    _attempt + 1,
+                    last_classification.code.value,
+                )
+        if not last_raw or "No YouTube route" in last_raw:
+            last_classification = classify_youtube_error("proxy timeout")
+        raise YouTubeAnalyzeError(last_classification, last_raw)
 
     def _extract_facebook_info(self, url: str) -> tuple[dict, str]:
         try:
@@ -535,16 +594,23 @@ class YtDlpAnalyzeService:
         url: str,
         cookiefile: str | None = None,
         extra_options: dict | None = None,
+        youtube_proxy: str | None = None,
     ) -> dict:
         try:
             import yt_dlp
 
             platform = detect_platform(url)
-            options = build_ytdlp_options(platform, "analyze")
+            options = build_ytdlp_options(
+                platform,
+                "analyze",
+                anonymous_youtube=bool(youtube_proxy),
+            )
             if cookiefile:
                 options["cookiefile"] = cookiefile
             if extra_options:
                 options.update(extra_options)
+            if youtube_proxy:
+                apply_anonymous_youtube_proxy(options, youtube_proxy)
             with yt_dlp.YoutubeDL(options) as ydl:
                 info = ydl.extract_info(url, download=False)
         except InstagramAuthError:

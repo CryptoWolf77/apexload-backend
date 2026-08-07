@@ -1,5 +1,10 @@
+from urllib.parse import urlparse
+
+
 def detect_platform(url: str) -> str:
     value = url.lower()
+    parsed = urlparse(value if "://" in value else f"//{value}")
+    host = (parsed.hostname or "").lower()
     if "tiktok" in value:
         return "TikTok"
     if "instagram" in value or "instagr.am" in value:
@@ -8,7 +13,12 @@ def detect_platform(url: str) -> str:
         return "Facebook"
     if "twitter" in value or "x.com" in value:
         return "X/Twitter"
-    if "youtube" in value or "youtu.be" in value:
+    if (
+        host == "youtube.com"
+        or host.endswith(".youtube.com")
+        or host == "youtu.be"
+        or host.endswith(".youtu.be")
+    ):
         return "YouTube Shorts"
     if "pinterest" in value:
         return "Pinterest"

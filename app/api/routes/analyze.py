@@ -13,6 +13,7 @@ from app.services.ytdlp_analyze_service import (
     AnalyzeServiceError,
     InstagramAuthRequiredError,
     UnsupportedUrlError,
+    YouTubeAnalyzeError,
     YouTubeAuthRequiredError,
     YtDlpAnalyzeService,
 )
@@ -67,6 +68,15 @@ async def analyze_link(
                     message=classification.safe_user_message,
                 )
         return response
+    except YouTubeAnalyzeError as exc:
+        return AnalyzeResponse(
+            success=False,
+            source="yt_dlp",
+            platform="YouTube Shorts",
+            error=exc.error,
+            code=exc.error,
+            message=exc.message,
+        )
     except YouTubeAuthRequiredError as exc:
         return AnalyzeResponse(
             success=False,

@@ -1,5 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.concurrency import run_in_threadpool
 
 from app.api.routes import (
     admin_instagram,
@@ -18,6 +19,7 @@ from app.services.instagram_cookie_health import (
     start_instagram_cookie_health_scheduler,
     stop_instagram_cookie_health_scheduler,
 )
+from app.services.youtube_proxy_manager import youtube_proxy_manager
 
 settings = get_settings()
 cors_origins = list(
@@ -62,13 +64,20 @@ app.include_router(takedown.router)
 
 
 @app.on_event("startup")
-async def startup_cookie_health() -> None:
+async def startup_background_services() -> None:
     initialize_instagram_cookie_storage()
     start_instagram_cookie_health_scheduler()
+    youtube_proxy_manager.start_background()
+    if settings.youtube_proxy_enabled and settings.youtube_proxy_prewarm_enabled:
+        await run_in_threadpool(
+            youtube_proxy_manager.wait_until_ready,
+            settings.youtube_proxy_startup_wait_seconds,
+        )
 
 
 @app.on_event("shutdown")
-async def shutdown_cookie_health() -> None:
+async def shutdown_background_services() -> None:
+    await run_in_threadpool(youtube_proxy_manager.stop_background)
     await stop_instagram_cookie_health_scheduler()
 
 

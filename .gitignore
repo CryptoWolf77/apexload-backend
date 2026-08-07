@@ -1,4 +1,6 @@
 venv/
+.test-deps/
+.pytest-tmp/
 *.pyc
 .env
 storage/temp/
