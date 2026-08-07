@@ -1,0 +1,23 @@
+{
+  "mode": "active",
+  "reason": "Instagram recovered after a successful real request.",
+  "reason_category": "",
+  "paused_until": null,
+  "last_error_at": null,
+  "last_success_at": "2026-08-07T06:49:26.300052+00:00",
+  "consecutive_failures": 0,
+  "consecutive_successes": 1,
+  "last_admin_alert_at": null,
+  "last_recovery_alert_at": "2026-08-07T06:49:26.300052+00:00",
+  "last_trigger_source": "",
+  "health_status": "healthy",
+  "health_reason": "",
+  "health_reason_category": "",
+  "health_technical_reason": "",
+  "health_warning_at": null,
+  "last_health_check_at": null,
+  "total_failures_today": 0,
+  "total_successes_today": 1,
+  "updated_at": "2026-08-07T06:49:26.300052+00:00",
+  "counter_date": "2026-08-07"
+}

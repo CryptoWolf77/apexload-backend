@@ -1647,7 +1647,7 @@ class YtDlpAnalyzeService:
     ) -> list[FormatOption]:
         resolutions = (
             self._available_resolutions(info)
-            if platform == "Instagram"
+            if platform in {"Instagram", "YouTube Shorts"}
             else self._available_heights(info)
         )
         duration = info.get("duration")

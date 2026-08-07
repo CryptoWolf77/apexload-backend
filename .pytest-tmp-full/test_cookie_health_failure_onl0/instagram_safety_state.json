@@ -1,0 +1,23 @@
+{
+  "mode": "degraded",
+  "reason": "",
+  "reason_category": "",
+  "paused_until": null,
+  "last_error_at": null,
+  "last_success_at": null,
+  "consecutive_failures": 0,
+  "consecutive_successes": 0,
+  "last_admin_alert_at": null,
+  "last_recovery_alert_at": null,
+  "last_trigger_source": "health_check",
+  "health_status": "warning",
+  "health_reason": "Instagram downloads are temporarily unavailable. Please try again later.",
+  "health_reason_category": "cookies_warning",
+  "health_technical_reason": "cookies invalid during health check",
+  "health_warning_at": "2026-08-07T06:49:26.272398+00:00",
+  "last_health_check_at": "2026-08-07T06:49:26.272398+00:00",
+  "total_failures_today": 0,
+  "total_successes_today": 0,
+  "updated_at": "2026-08-07T06:49:26.272398+00:00",
+  "counter_date": "2026-08-07"
+}

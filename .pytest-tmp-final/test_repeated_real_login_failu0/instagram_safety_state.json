@@ -1,0 +1,23 @@
+{
+  "mode": "paused",
+  "reason": "Instagram downloads are temporarily unavailable. Please try again later.",
+  "reason_category": "login_required",
+  "paused_until": "2026-08-10T06:50:53.229049+00:00",
+  "last_error_at": "2026-08-07T06:50:53.229049+00:00",
+  "last_success_at": null,
+  "consecutive_failures": 3,
+  "consecutive_successes": 0,
+  "last_admin_alert_at": "2026-08-07T06:50:53.229049+00:00",
+  "last_recovery_alert_at": null,
+  "last_trigger_source": "real_user_request",
+  "health_status": "healthy",
+  "health_reason": "",
+  "health_reason_category": "",
+  "health_technical_reason": "",
+  "health_warning_at": null,
+  "last_health_check_at": null,
+  "total_failures_today": 3,
+  "total_successes_today": 0,
+  "updated_at": "2026-08-07T06:50:53.229049+00:00",
+  "counter_date": "2026-08-07"
+}

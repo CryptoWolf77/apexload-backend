@@ -43,6 +43,7 @@ from app.services.youtube_error_classifier import (
     YouTubeErrorClassification,
     YouTubeErrorCode,
     YouTubeOperationError,
+    YouTubeQualityMismatchError,
     classify_youtube_error,
 )
 from app.services.youtube_proxy_manager import (
@@ -319,6 +320,8 @@ class DownloadService:
                 job, item, job_dir, download_url, output_template,
                 output_name, item_type, is_audio_item, base_progress,
             )
+        except YouTubeQualityMismatchError as exc:
+            raise YouTubeOperationError(classify_youtube_error(exc), str(exc)) from exc
         except (InstagramAuthError, YouTubeAuthError) as exc:
             raise RuntimeError(self._download_error_message(job.request.url, exc, item)) from exc
         except Exception as exc:
@@ -338,14 +341,29 @@ class DownloadService:
         proxy_url: str | None = None,
     ) -> None:
         platform = detect_platform(job.request.url)
+        option_overrides = {
+            "outtmpl": output_template,
+            "format": self._format_selector(item, platform),
+            "progress_hooks": [self._progress_hook(job, base_progress)],
+        }
+        youtube_resolution = self._requested_video_resolution(item)
+        if platform == "YouTube Shorts" and not is_audio_item and youtube_resolution:
+            option_overrides.update(
+                {
+                    "format_sort": self._youtube_format_sort(youtube_resolution),
+                    "merge_output_format": "mp4",
+                    "postprocessors": [
+                        {
+                            "key": "FFmpegVideoRemuxer",
+                            "preferedformat": "mp4",
+                        }
+                    ],
+                }
+            )
         options = build_ytdlp_options(
             platform,
             "download",
-            {
-                "outtmpl": output_template,
-                "format": self._format_selector(item, platform),
-                "progress_hooks": [self._progress_hook(job, base_progress)],
-            },
+            option_overrides,
             anonymous_youtube=bool(proxy_url),
         )
         if proxy_url:
@@ -368,6 +386,8 @@ class DownloadService:
             new_files = self._validated_audio_outputs(job_dir, item, new_files)
         if not new_files:
             raise RuntimeError("yt-dlp did not produce a media file")
+        if platform == "YouTube Shorts" and not is_audio_item:
+            new_files = self._validated_youtube_video_outputs(item, new_files)
         for path in new_files:
             self._register_file(job, path, "audio" if is_audio_item else item_type)
 
@@ -632,14 +652,8 @@ class DownloadService:
         if self._is_audio_item(item):
             return "bestaudio/best"
 
-        height_map = {
-            "480p": 480,
-            "720p": 720,
-            "1080p": 1080,
-            "2160p": 2160,
-        }
-        height = height_map.get(self._format_id(item))
-        if not height:
+        resolution = self._requested_video_resolution(item)
+        if not resolution:
             return "best"
 
         if platform == "Instagram":
@@ -648,15 +662,29 @@ class DownloadService:
             return "bv*+ba/b"
 
         if platform == "YouTube Shorts":
-            return self._youtube_format_selector(height)
+            return self._youtube_format_selector(resolution)
 
         if shutil.which("ffmpeg"):
-            return self._compatible_video_selector(height)
+            return self._compatible_video_selector(resolution)
         logger.info("ffmpeg not found. Using single-file format fallback.")
-        return f"best[height<={height}]/best"
+        return f"best[height<={resolution}]/best"
 
-    def _youtube_format_selector(self, height: int | None) -> str:
-        return self._compatible_video_selector(height)
+    def _requested_video_resolution(self, item: SelectedDownloadItem) -> int | None:
+        return {
+            "480p": 480,
+            "720p": 720,
+            "1080p": 1080,
+            "2160p": 2160,
+        }.get(self._format_id(item))
+
+    def _youtube_format_selector(self, resolution: int | None) -> str:
+        # Resolution is applied through yt-dlp's orientation-independent `res`
+        # sort. Keeping the selector broad lets resolution win before the AVC
+        # preference instead of accepting a lower AVC rendition too early.
+        return "bv*+ba/b"
+
+    def _youtube_format_sort(self, resolution: int) -> list[str]:
+        return [f"res:{resolution}", "+codec:avc:m4a", "fps", "br"]
 
     def _compatible_video_selector(self, height: int | None) -> str:
         ceiling = f"[height<={height}]" if height else ""
@@ -936,6 +964,45 @@ class DownloadService:
         if valid_width is not None and valid_height is not None:
             return min(valid_width, valid_height)
         return valid_width or valid_height
+
+    def _validated_youtube_video_outputs(
+        self,
+        item: SelectedDownloadItem,
+        files: list[Path],
+    ) -> list[Path]:
+        target = self._requested_video_resolution(item)
+        if target is None:
+            return files
+
+        for path in files:
+            width, height = self._ffprobe_video_dimensions(path)
+            actual = self._effective_resolution(width, height)
+            logger.info(
+                "YouTube video output: requestedQuality=%s expectedShortEdge=%s "
+                "actualShortEdge=%s finalWidth=%s finalHeight=%s outputFilename=%s",
+                self._format_id(item),
+                target,
+                actual or "unknown",
+                width or "unknown",
+                height or "unknown",
+                path.name,
+            )
+            if actual != target:
+                for output in files:
+                    try:
+                        output.unlink(missing_ok=True)
+                    except OSError:
+                        logger.warning(
+                            "Could not remove incorrect YouTube output name=%s",
+                            output.name,
+                        )
+                raise YouTubeQualityMismatchError(
+                    "Requested format is not available: "
+                    f"expected {target}p short edge but downloaded "
+                    f"{actual or 'an unverifiable resolution'} "
+                    f"({width or 'unknown'}x{height or 'unknown'})."
+                )
+        return files
 
     def _positive_int(self, value: object) -> int | None:
         if isinstance(value, bool):

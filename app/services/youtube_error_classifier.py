@@ -26,6 +26,10 @@ class YouTubeErrorClassification:
     verify_with_another_proxy: bool = False
 
 
+class YouTubeQualityMismatchError(RuntimeError):
+    """The downloaded file does not match its explicitly requested resolution."""
+
+
 MESSAGES = {
     YouTubeErrorCode.ANTI_BOT: "YouTube is temporarily limiting this request. Please try again shortly.",
     YouTubeErrorCode.RATE_LIMITED: "YouTube is temporarily limiting this request. Please try again shortly.",
@@ -42,6 +46,11 @@ MESSAGES = {
 
 def classify_youtube_error(error: BaseException | str) -> YouTubeErrorClassification:
     text = str(error).lower()
+
+    if isinstance(error, YouTubeQualityMismatchError):
+        # A different YouTube route can expose a different set of formats, so
+        # allow bounded per-job failover before returning format unavailable.
+        return _result(YouTubeErrorCode.FORMAT_UNAVAILABLE, retryable=True)
 
     if any(marker in text for marker in ("private video", "this video is private", "members-only")):
         return _result(YouTubeErrorCode.PRIVATE)
@@ -104,4 +113,3 @@ class YouTubeOperationError(RuntimeError):
         self.classification = classification
         self.technical_message = technical_message
         super().__init__(classification.user_message)
-

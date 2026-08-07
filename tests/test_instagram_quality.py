@@ -163,19 +163,12 @@ class InstagramDownloadSelectorTests(unittest.TestCase):
     def test_youtube_prefers_iphone_compatible_h264_and_m4a(self) -> None:
         selector = self.service._youtube_format_selector(1080)
 
-        self.assertTrue(
-            selector.startswith(
-                "bestvideo[vcodec^=avc1][height<=1080]+bestaudio[ext=m4a]/"
-            )
+        self.assertEqual(selector, "bv*+ba/b")
+        self.assertEqual(
+            self.service._youtube_format_sort(1080),
+            ["res:1080", "+codec:avc:m4a", "fps", "br"],
         )
-        self.assertIn(
-            "best[ext=mp4][vcodec^=avc1][height<=1080]",
-            selector,
-        )
-        self.assertIn(
-            "bestvideo[height<=1080]+bestaudio",
-            selector,
-        )
+        self.assertNotIn("height", selector)
 
     def test_selected_format_diagnostics_capture_portrait_dimensions(self) -> None:
         format_id, width, height = self.service._instagram_selected_format_details(
