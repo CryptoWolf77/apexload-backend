@@ -1693,7 +1693,7 @@ class YtDlpAnalyzeService:
                     unavailableReason=None if thumbnail else "Not available on this clip",
                 ),
             ]
-        return [
+        formats = [
             self._video_format(
                 "480p", "MP4 480p", 480, False, resolutions,
                 exact=platform == "YouTube Shorts",
@@ -1719,17 +1719,23 @@ class YtDlpAnalyzeService:
                 premium=True,
                 available=True,
             ),
-            FormatOption(
-                id="thumbnail",
-                label="Thumbnail JPG",
-                type="image",
-                quality="thumbnail",
-                size="Unknown" if thumbnail else None,
-                premium=False,
-                available=bool(thumbnail),
-                unavailableReason=None if thumbnail else "Not available on this clip",
-            ),
         ]
+        if platform != "Instagram":
+            formats.append(
+                FormatOption(
+                    id="thumbnail",
+                    label="Thumbnail JPG",
+                    type="image",
+                    quality="thumbnail",
+                    size="Unknown" if thumbnail else None,
+                    premium=False,
+                    available=bool(thumbnail),
+                    unavailableReason=(
+                        None if thumbnail else "Not available on this clip"
+                    ),
+                )
+            )
+        return formats
 
     def _available_resolutions(self, info: dict) -> set[int]:
         resolutions: set[int] = set()
