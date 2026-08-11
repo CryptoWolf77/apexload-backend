@@ -8,11 +8,9 @@ import threading
 import time
 import uuid
 from pathlib import Path
-from typing import Callable
 from urllib.parse import parse_qs, urlparse
 from urllib.request import Request, urlopen
 
-from app.core.config import get_settings
 from app.models.download_models import (
     DownloadFile,
     DownloadRequest,
@@ -27,30 +25,12 @@ from app.services.instagram_auth_service import (
 from app.services.instagram_cookie_health import FRIENDLY_INSTAGRAM_UNAVAILABLE
 from app.services.instagram_error_classifier import classify_instagram_error
 from app.services.instagram_safety_service import instagram_safety_service
-from app.services.youtube_auth_service import YouTubeAuthError
 from app.services.ytdlp_analyze_service import (
     FACEBOOK_PHOTO_UNAVAILABLE_MESSAGE,
     INSTAGRAM_PHOTO_UNAVAILABLE_MESSAGE,
     YtDlpAnalyzeService,
 )
-from app.services.ytdlp_options import (
-    apply_anonymous_youtube_proxy,
-    build_ytdlp_options,
-    configured_instagram_cookiefile,
-)
-from app.services.youtube_error_classifier import (
-    MESSAGES as YOUTUBE_ERROR_MESSAGES,
-    YouTubeErrorClassification,
-    YouTubeErrorCode,
-    YouTubeOperationError,
-    YouTubeQualityMismatchError,
-    classify_youtube_error,
-)
-from app.services.youtube_proxy_manager import (
-    YouTubeProxyCapabilityUnavailableError,
-    YouTubeProxyUnavailableError,
-    youtube_proxy_manager,
-)
+from app.services.ytdlp_options import build_ytdlp_options, configured_instagram_cookiefile
 from app.utils.platform_detector import detect_platform
 
 logger = logging.getLogger("apexload.download")
@@ -70,8 +50,6 @@ class DownloadJob:
         self.error: str | None = None
         self.error_code: str | None = None
         self.files: list[DownloadFile] = []
-        # Internal only. Never serialized to the mobile API.
-        self.youtube_proxy: str | None = None
 
 
 class DownloadService:
@@ -187,8 +165,6 @@ class DownloadService:
                 error=(
                     classification.safe_user_message
                     if classification
-                    else exc.classification.user_message
-                    if isinstance(exc, YouTubeOperationError)
                     else self._safe_error(exc)
                 ),
                 error_code=(
@@ -281,12 +257,6 @@ class DownloadService:
             "high_quality",
             "compressed",
         }:
-            if (
-                detect_platform(job.request.url) == "YouTube Shorts"
-                and get_settings().youtube_proxy_enabled
-            ):
-                self._download_youtube_thumbnail_with_failover(job, item, job_dir)
-                return
             self._download_image_or_thumbnail(job, item, job_dir)
             return
 
@@ -309,21 +279,12 @@ class DownloadService:
                 item_type,
             )
             return
-        settings = get_settings()
-        if platform == "YouTube Shorts" and settings.youtube_proxy_enabled:
-            self._download_youtube_with_failover(
-                job, item, job_dir, download_url, output_template,
-                output_name, item_type, is_audio_item, base_progress,
-            )
-            return
         try:
             self._execute_ytdlp_item(
                 job, item, job_dir, download_url, output_template,
                 output_name, item_type, is_audio_item, base_progress,
             )
-        except YouTubeQualityMismatchError as exc:
-            raise YouTubeOperationError(classify_youtube_error(exc), str(exc)) from exc
-        except (InstagramAuthError, YouTubeAuthError) as exc:
+        except InstagramAuthError as exc:
             raise RuntimeError(self._download_error_message(job.request.url, exc, item)) from exc
         except Exception as exc:
             raise RuntimeError(self._download_error_message(job.request.url, exc, item)) from exc
@@ -339,7 +300,6 @@ class DownloadService:
         item_type: str,
         is_audio_item: bool,
         base_progress: int,
-        proxy_url: str | None = None,
     ) -> None:
         platform = detect_platform(job.request.url)
         option_overrides = {
@@ -347,32 +307,14 @@ class DownloadService:
             "format": self._format_selector(item, platform),
             "progress_hooks": [self._progress_hook(job, base_progress)],
         }
-        youtube_resolution = self._requested_video_resolution(item)
-        if platform == "YouTube Shorts" and not is_audio_item and youtube_resolution:
-            option_overrides.update(
-                {
-                    "format_sort": self._youtube_format_sort(youtube_resolution),
-                    "merge_output_format": "mp4",
-                    "postprocessors": [
-                        {
-                            "key": "FFmpegVideoRemuxer",
-                            "preferedformat": "mp4",
-                        }
-                    ],
-                }
-            )
         options = build_ytdlp_options(
             platform,
             "download",
             option_overrides,
-            anonymous_youtube=bool(proxy_url),
         )
-        if proxy_url:
-            apply_anonymous_youtube_proxy(options, proxy_url)
         if is_audio_item:
             self._configure_audio_options(options, item)
         self._ensure_instagram_download_auth(job.request.url, item, options)
-        self._log_youtube_download_options(job.request.url, item, options)
 
         import yt_dlp
 
@@ -387,207 +329,8 @@ class DownloadService:
             new_files = self._validated_audio_outputs(job_dir, item, new_files)
         if not new_files:
             raise RuntimeError("yt-dlp did not produce a media file")
-        if platform == "YouTube Shorts" and not is_audio_item:
-            new_files = self._validated_youtube_video_outputs(item, new_files)
         for path in new_files:
             self._register_file(job, path, "audio" if is_audio_item else item_type)
-
-    def _download_youtube_with_failover(
-        self,
-        job: DownloadJob,
-        item: SelectedDownloadItem,
-        job_dir: Path,
-        download_url: str,
-        output_template: str,
-        output_name: str,
-        item_type: str,
-        is_audio_item: bool,
-        base_progress: int,
-    ) -> None:
-        self._run_youtube_with_failover(
-            job,
-            job_dir,
-            download_url,
-            lambda proxy_url: self._execute_ytdlp_item(
-                job, item, job_dir, download_url, output_template,
-                output_name, item_type, is_audio_item, base_progress, proxy_url,
-            ),
-            required_resolution=(
-                None if is_audio_item else self._requested_video_resolution(item)
-            ),
-        )
-
-    def _download_youtube_thumbnail_with_failover(
-        self,
-        job: DownloadJob,
-        item: SelectedDownloadItem,
-        job_dir: Path,
-    ) -> None:
-        output_name = self._sanitize_filename(self._format_id(item) or "thumbnail")
-
-        def download_thumbnail(proxy_url: str | None) -> None:
-            import yt_dlp
-
-            options = build_ytdlp_options(
-                "YouTube Shorts",
-                "image_download",
-                {
-                    "skip_download": True,
-                    "writethumbnail": True,
-                    "outtmpl": str(job_dir / f"{output_name}.%(ext)s"),
-                    "postprocessors": [{
-                        "key": "FFmpegThumbnailsConvertor",
-                        "format": self._image_extension(item),
-                    }],
-                },
-                anonymous_youtube=bool(proxy_url),
-            )
-            if proxy_url:
-                apply_anonymous_youtube_proxy(options, proxy_url)
-            before = set(job_dir.iterdir())
-            with yt_dlp.YoutubeDL(options) as ydl:
-                ydl.download([job.request.url])
-            images = [
-                path for path in set(job_dir.iterdir()) - before
-                if path.is_file() and path.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp"}
-            ]
-            if not images:
-                images = [
-                    path for path in job_dir.glob(f"{output_name}.*")
-                    if path.is_file() and path.stat().st_size > 0
-                ]
-            if not images:
-                raise RuntimeError("YouTube thumbnail download did not produce an image")
-            self._register_file(job, max(images, key=lambda path: path.stat().st_size), "image")
-
-        self._run_youtube_with_failover(
-            job,
-            job_dir,
-            job.request.url,
-            download_thumbnail,
-        )
-
-    def _run_youtube_with_failover(
-        self,
-        job: DownloadJob,
-        job_dir: Path,
-        url: str,
-        operation: Callable[[str | None], None],
-        *,
-        required_resolution: int | None = None,
-    ) -> None:
-        settings = get_settings()
-        excluded: set[str] = set()
-        baseline = set(job_dir.iterdir())
-        direct_pending = settings.youtube_proxy_direct_first
-        unavailable_observations = 0
-        last_error: BaseException | str = "No validated YouTube proxy is available"
-        no_route = False
-
-        for attempt in range(1, settings.youtube_proxy_max_job_attempts + 1):
-            proxy_url: str | None = None
-            if direct_pending:
-                direct_pending = False
-            else:
-                try:
-                    proxy_url = youtube_proxy_manager.acquire(
-                        url,
-                        excluded=excluded,
-                        required_resolution=required_resolution,
-                    )
-                    excluded.add(proxy_url)
-                except YouTubeProxyCapabilityUnavailableError as exc:
-                    last_error = YouTubeQualityMismatchError(
-                        "Requested format is not available after bounded "
-                        f"proxy capability discovery for {required_resolution}p."
-                    )
-                    logger.info(
-                        "youtube_proxy_capability_exhausted job_id=%s "
-                        "requiredResolution=%s reason=%s",
-                        job.job_id,
-                        required_resolution,
-                        type(exc).__name__,
-                    )
-                    break
-                except YouTubeProxyUnavailableError as exc:
-                    last_error = exc
-                    no_route = True
-                    break
-            self._lock_youtube_proxy(job, proxy_url)
-            try:
-                operation(proxy_url)
-                if proxy_url:
-                    youtube_proxy_manager.report_success(proxy_url)
-                return
-            except Exception as exc:
-                last_error = exc
-                classification = classify_youtube_error(exc)
-                if proxy_url:
-                    youtube_proxy_manager.forget_capability(url, proxy_url)
-                    youtube_proxy_manager.report_failure(proxy_url, exc)
-                self._cleanup_attempt_files(job_dir, baseline)
-                self._lock_youtube_proxy(job, None, restarting=True)
-                if classification.verify_with_another_proxy:
-                    unavailable_observations += 1
-                    if unavailable_observations >= 2:
-                        break
-                elif not classification.retryable:
-                    break
-                logger.info(
-                    "youtube_proxy_retry job_id=%s attempt=%s code=%s",
-                    job.job_id,
-                    attempt,
-                    classification.code.value,
-                )
-                self._update_job(
-                    job,
-                    status="processing",
-                    progress=max(5, min(job.progress, 90)),
-                    message="Retrying YouTube download",
-                )
-
-        classification = (
-            YouTubeErrorClassification(
-                YouTubeErrorCode.PROXY_UNAVAILABLE,
-                YOUTUBE_ERROR_MESSAGES[YouTubeErrorCode.PROXY_UNAVAILABLE],
-                proxy_related=True,
-                retryable=True,
-            )
-            if no_route
-            else classify_youtube_error(last_error)
-        )
-        logger.warning(
-            "youtube_proxy_exhausted job_id=%s code=%s",
-            job.job_id,
-            classification.code.value,
-        )
-        raise YouTubeOperationError(classification, str(last_error))
-
-    def _lock_youtube_proxy(
-        self,
-        job: DownloadJob,
-        proxy_url: str | None,
-        *,
-        restarting: bool = False,
-    ) -> None:
-        with self._lock:
-            if job.youtube_proxy and proxy_url and job.youtube_proxy != proxy_url and not restarting:
-                raise RuntimeError("YouTube proxy cannot change during an active attempt")
-            job.youtube_proxy = proxy_url
-
-    def _cleanup_attempt_files(self, job_dir: Path, baseline: set[Path]) -> None:
-        resolved_job_dir = job_dir.resolve()
-        for path in set(job_dir.iterdir()) - baseline:
-            try:
-                resolved = path.resolve()
-                if resolved.parent != resolved_job_dir:
-                    continue
-                if path.is_dir():
-                    shutil.rmtree(path)
-                else:
-                    path.unlink(missing_ok=True)
-            except OSError:
-                logger.warning("Could not remove partial YouTube attempt file name=%s", path.name)
 
     def _download_image_or_thumbnail(
         self,
@@ -664,7 +407,7 @@ class DownloadService:
 
             with yt_dlp.YoutubeDL(options) as ydl:
                 info = ydl.extract_info(self._download_url(url), download=False)
-        except (InstagramAuthError, YouTubeAuthError) as exc:
+        except InstagramAuthError as exc:
             raise RuntimeError(f"yt-dlp metadata failed: {self._safe_error(exc)}") from exc
         except Exception as exc:
             raise RuntimeError(f"yt-dlp metadata failed: {self._safe_error(exc)}") from exc
@@ -685,9 +428,6 @@ class DownloadService:
             # applies the requested ceiling to the video's short edge.
             return "bv*+ba/b"
 
-        if platform == "YouTube Shorts":
-            return self._youtube_format_selector(resolution)
-
         if shutil.which("ffmpeg"):
             return self._compatible_video_selector(resolution)
         logger.info("ffmpeg not found. Using single-file format fallback.")
@@ -700,15 +440,6 @@ class DownloadService:
             "1080p": 1080,
             "2160p": 2160,
         }.get(self._format_id(item))
-
-    def _youtube_format_selector(self, resolution: int | None) -> str:
-        # Resolution is applied through yt-dlp's orientation-independent `res`
-        # sort. Keeping the selector broad lets resolution win before the AVC
-        # preference instead of accepting a lower AVC rendition too early.
-        return "bv*+ba/b"
-
-    def _youtube_format_sort(self, resolution: int) -> list[str]:
-        return [f"res:{resolution}", "+codec:avc:m4a", "fps", "br"]
 
     def _compatible_video_selector(self, height: int | None) -> str:
         ceiling = f"[height<={height}]" if height else ""
@@ -989,45 +720,6 @@ class DownloadService:
             return min(valid_width, valid_height)
         return valid_width or valid_height
 
-    def _validated_youtube_video_outputs(
-        self,
-        item: SelectedDownloadItem,
-        files: list[Path],
-    ) -> list[Path]:
-        target = self._requested_video_resolution(item)
-        if target is None:
-            return files
-
-        for path in files:
-            width, height = self._ffprobe_video_dimensions(path)
-            actual = self._effective_resolution(width, height)
-            logger.info(
-                "YouTube video output: requestedQuality=%s expectedShortEdge=%s "
-                "actualShortEdge=%s finalWidth=%s finalHeight=%s outputFilename=%s",
-                self._format_id(item),
-                target,
-                actual or "unknown",
-                width or "unknown",
-                height or "unknown",
-                path.name,
-            )
-            if actual != target:
-                for output in files:
-                    try:
-                        output.unlink(missing_ok=True)
-                    except OSError:
-                        logger.warning(
-                            "Could not remove incorrect YouTube output name=%s",
-                            output.name,
-                        )
-                raise YouTubeQualityMismatchError(
-                    "Requested format is not available: "
-                    f"expected {target}p short edge but downloaded "
-                    f"{actual or 'an unverifiable resolution'} "
-                    f"({width or 'unknown'}x{height or 'unknown'})."
-                )
-        return files
-
     def _positive_int(self, value: object) -> int | None:
         if isinstance(value, bool):
             return None
@@ -1149,23 +841,6 @@ class DownloadService:
             raise RuntimeError(
                 "Instagram download auth misconfigured: cookiefile missing from yt-dlp options."
             )
-
-    def _log_youtube_download_options(
-        self,
-        url: str,
-        item: SelectedDownloadItem,
-        options: dict,
-    ) -> None:
-        if detect_platform(url) != "YouTube Shorts":
-            return
-        cookiefile = options.get("cookiefile")
-        logger.info(
-            "YouTube download options: platform=YouTube selectedFormatId=%s "
-            "ytdlpFormat=%s cookieFileExists=%s",
-            self._format_id(item),
-            options.get("format"),
-            bool(cookiefile and Path(str(cookiefile)).is_file()),
-        )
 
     def _progress_hook(self, job: DownloadJob, base_progress: int):
         def hook(data: dict) -> None:
@@ -1366,38 +1041,9 @@ class DownloadService:
             and self._is_facebook_photo_unavailable_error(message)
         ):
             return FACEBOOK_PHOTO_UNAVAILABLE_MESSAGE
-        if detect_platform(url) == "YouTube Shorts" and (
-            "sign in to confirm" in message.lower()
-            or "not a bot" in message.lower()
-            or "youtube cookie file" in message.lower()
-            or "youtube requires sign-in" in message.lower()
-        ):
-            return (
-                "YouTube requires sign-in verification. Please refresh YouTube "
-                "cookies from the admin panel."
-            )
-        if detect_platform(url) == "YouTube Shorts" and (
-            "requested format is not available" in message.lower()
-            or "format is not available" in message.lower()
-        ):
-            return "This YouTube format is not available. Try another quality or link."
-        if detect_platform(url) == "YouTube Shorts" and (
-            "no challenge solving failed" in message.lower()
-            or "supported javascript runtime" in message.lower()
-            or "challenge solver" in message.lower()
-            or "only images are available" in message.lower()
-            or "storyboard" in message.lower()
-            or "no video formats found" in message.lower()
-        ):
-            return (
-                "YouTube video formats are temporarily unavailable. "
-                "Please try another link."
-            )
         return f"yt-dlp download failed: {message}"
 
     def _error_code_for(self, exc: Exception) -> str | None:
-        if isinstance(exc, YouTubeOperationError):
-            return exc.classification.code.value
         if "instagram downloads are temporarily unavailable" in self._safe_error(exc).lower():
             return "INSTAGRAM_COOKIES_INVALID"
         return None

@@ -7,6 +7,7 @@ from app.models.download_models import (
     DownloadStatusResponse,
 )
 from app.services.download_service import download_service
+from app.utils.platform_detector import detect_platform
 
 router = APIRouter(tags=["download"])
 
@@ -17,6 +18,14 @@ async def start_download(
     background_tasks: BackgroundTasks,
     _api_key: str | None = Depends(get_optional_api_key),
 ) -> DownloadStartResponse:
+    if detect_platform(payload.url) == "Unknown":
+        return DownloadStartResponse(
+            success=False,
+            jobId="",
+            status="failed",
+            message="This link is not supported yet.",
+            errorCode="unsupported_url",
+        )
     if len(payload.selectedItems) != 1:
         return DownloadStartResponse(
             success=False,

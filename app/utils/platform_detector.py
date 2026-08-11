@@ -1,30 +1,27 @@
 from urllib.parse import urlparse
 
 
+def _is_host(host: str, *domains: str) -> bool:
+    return any(host == domain or host.endswith(f".{domain}") for domain in domains)
+
+
 def detect_platform(url: str) -> str:
-    value = url.lower()
-    parsed = urlparse(value if "://" in value else f"//{value}")
+    value = url.strip().lower()
+    parsed = urlparse(value if "://" in value else f"https://{value}")
     host = (parsed.hostname or "").lower()
-    if "tiktok" in value:
+    if _is_host(host, "tiktok.com"):
         return "TikTok"
-    if "instagram" in value or "instagr.am" in value:
+    if _is_host(host, "instagram.com", "instagr.am"):
         return "Instagram"
-    if "facebook" in value or "fb.watch" in value:
+    if _is_host(host, "facebook.com", "fb.watch"):
         return "Facebook"
-    if "twitter" in value or "x.com" in value:
+    if _is_host(host, "twitter.com", "x.com"):
         return "X/Twitter"
-    if (
-        host == "youtube.com"
-        or host.endswith(".youtube.com")
-        or host == "youtu.be"
-        or host.endswith(".youtu.be")
-    ):
-        return "YouTube Shorts"
-    if "pinterest" in value:
+    if _is_host(host, "pinterest.com", "pin.it"):
         return "Pinterest"
-    if "reddit" in value:
+    if _is_host(host, "reddit.com"):
         return "Reddit"
-    if "snapchat.com" in value or "snap.com" in value:
+    if _is_host(host, "snapchat.com", "snap.com"):
         return "Snapchat"
     return "Unknown"
 
@@ -40,9 +37,6 @@ def detect_media_type(url: str) -> str:
         "reel",
         "reels",
         "tiktok",
-        "youtube",
-        "shorts",
-        "watch",
     ]
     image_signals = [
         "instagram.com/p/",

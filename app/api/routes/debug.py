@@ -10,7 +10,6 @@ from app.services.ytdlp_analyze_service import (
     YtDlpAnalyzeService,
 )
 from app.services.instagram_auth_service import ytdlp_auth_debug_status
-from app.services.youtube_auth_service import get_youtube_auth_status
 
 router = APIRouter(tags=["debug"])
 instagram_service = YtDlpAnalyzeService()
@@ -27,10 +26,8 @@ async def config_debug() -> dict[str, bool | str]:
     return {
         "instagramAuthMode": settings.instagram_auth_mode,
         "enableInstagramCookies": settings.enable_instagram_cookies,
-        "youtubeAuthMode": settings.youtube_auth_mode,
         "useMockAnalyzeFallback": settings.use_mock_analyze_fallback,
         "instagramCookieFile": settings.instagram_cookies_path,
-        "youtubeCookiesFile": settings.youtube_cookie_file,
     }
 
 
@@ -129,23 +126,6 @@ async def x_image_debug(
         "acceptedCandidateSize": debug["acceptedCandidateSize"],
         "bestImageUrlMasked": debug["bestImageUrlMasked"],
         "reason": debug["reason"],
-    }
-
-
-@router.get("/youtube-cookies")
-async def youtube_cookies_debug() -> dict[str, bool | int | str | None]:
-    # TODO: Remove or protect debug endpoints before production release.
-    status = get_youtube_auth_status()
-
-    return {
-        "success": True,
-        "youtubeAuthMode": status["authMode"],
-        "cookieFileRaw": status["cookieFileRaw"],
-        "cookieFileResolved": status["cookieFileResolved"],
-        "cookieFileExists": status["cookieFileExists"],
-        "cookieFileSize": status["cookieFileSize"],
-        "cookieFileValid": status["cookieFileLooksValid"],
-        "cookieValidationReason": status["reason"],
     }
 
 

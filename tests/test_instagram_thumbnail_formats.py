@@ -128,7 +128,7 @@ def test_instagram_image_formats_remain_on_the_image_path(
 
 @pytest.mark.parametrize(
     "platform",
-    ["Facebook", "YouTube Shorts", "TikTok", "X/Twitter"],
+    ["Facebook", "TikTok", "X/Twitter"],
 )
 def test_other_standard_video_platforms_retain_thumbnail(platform: str) -> None:
     formats = YtDlpAnalyzeService()._video_formats(

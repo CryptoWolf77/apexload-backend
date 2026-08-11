@@ -160,16 +160,6 @@ class InstagramDownloadSelectorTests(unittest.TestCase):
         self.assertNotIn("--remux-video", command)
         self.assertNotIn("-S", command)
 
-    def test_youtube_prefers_iphone_compatible_h264_and_m4a(self) -> None:
-        selector = self.service._youtube_format_selector(1080)
-
-        self.assertEqual(selector, "bv*+ba/b")
-        self.assertEqual(
-            self.service._youtube_format_sort(1080),
-            ["res:1080", "+codec:avc:m4a", "fps", "br"],
-        )
-        self.assertNotIn("height", selector)
-
     def test_selected_format_diagnostics_capture_portrait_dimensions(self) -> None:
         format_id, width, height = self.service._instagram_selected_format_details(
             "noise\nAPEXLOAD_SELECTED_FORMAT=123+456|1080|1920\n"

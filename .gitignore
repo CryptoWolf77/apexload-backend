@@ -5,7 +5,6 @@ venv/
 .env
 storage/temp/
 instagram_cookies.txt
-youtube_cookies.txt
 cookies.txt
 *.cookies
 *.cookie

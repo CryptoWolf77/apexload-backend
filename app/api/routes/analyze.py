@@ -13,8 +13,6 @@ from app.services.ytdlp_analyze_service import (
     AnalyzeServiceError,
     InstagramAuthRequiredError,
     UnsupportedUrlError,
-    YouTubeAnalyzeError,
-    YouTubeAuthRequiredError,
     YtDlpAnalyzeService,
 )
 from app.utils.platform_detector import detect_platform
@@ -31,7 +29,17 @@ async def analyze_link(
     _api_key: str | None = Depends(get_optional_api_key),
 ) -> AnalyzeResponse:
     settings = get_settings()
-    is_instagram = detect_platform(payload.url) == "Instagram"
+    platform = detect_platform(payload.url)
+    if platform == "Unknown":
+        return AnalyzeResponse(
+            success=False,
+            source="yt_dlp",
+            error="unsupported_url",
+            code="unsupported_url",
+            message="This link is not supported yet.",
+        )
+
+    is_instagram = platform == "Instagram"
     decision = None
     if is_instagram:
         decision = instagram_safety_service.begin_request()
@@ -68,22 +76,6 @@ async def analyze_link(
                     message=classification.safe_user_message,
                 )
         return response
-    except YouTubeAnalyzeError as exc:
-        return AnalyzeResponse(
-            success=False,
-            source="yt_dlp",
-            platform="YouTube Shorts",
-            error=exc.error,
-            code=exc.error,
-            message=exc.message,
-        )
-    except YouTubeAuthRequiredError as exc:
-        return AnalyzeResponse(
-            success=False,
-            source="yt_dlp",
-            error=exc.error,
-            message=exc.message,
-        )
     except InstagramAuthRequiredError as exc:
         if is_instagram:
             classification = instagram_safety_service.finish_failure(exc.message, decision)

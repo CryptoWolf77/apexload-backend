@@ -1,9 +1,7 @@
 import logging
 import os
 import shutil
-import subprocess
 from datetime import datetime, timezone
-from importlib import metadata
 from pathlib import Path
 from typing import Any
 
@@ -164,20 +162,10 @@ def test_instagram_cookie_with_ytdlp(test_url: str | None = None) -> dict[str, A
 def ytdlp_auth_debug_status() -> dict[str, Any]:
     settings = get_settings()
     status = get_instagram_auth_status()
-    from app.services.youtube_auth_service import get_youtube_auth_status
-
-    youtube_status = get_youtube_auth_status()
-    ejs_version = ytdlp_ejs_version()
     return {
         "ytDlpVersion": yt_dlp_version(),
         "ffmpegFound": shutil.which("ffmpeg") is not None,
         "ffprobeFound": shutil.which("ffprobe") is not None,
-        "nodeFound": shutil.which("node") is not None,
-        "nodeVersion": node_version(),
-        "denoFound": shutil.which("deno") is not None,
-        "denoVersion": deno_version(),
-        "ytdlpEjsFound": ejs_version is not None,
-        "ytdlpEjsVersion": ejs_version,
         "instagramAuthMode": settings.instagram_auth_mode,
         "impersonate": "chrome"
         if (settings.instagram_auth_mode or "").lower() in {"cookiefile", "browser"}
@@ -186,9 +174,6 @@ def ytdlp_auth_debug_status() -> dict[str, Any]:
         "cookieFileLooksValid": status["cookieFileLooksValid"],
         "cookiesFromBrowserEnabled": settings.ytdlp_cookies_from_browser_enable,
         "browser": settings.ytdlp_cookies_browser,
-        "youtubeAuthMode": youtube_status["authMode"],
-        "youtubeCookieFileExists": youtube_status["cookieFileExists"],
-        "youtubeCookieFileLooksValid": youtube_status["cookieFileLooksValid"],
     }
 
 
@@ -199,39 +184,6 @@ def yt_dlp_version() -> str:
         return str(yt_dlp.version.__version__)
     except Exception:
         return "unknown"
-
-
-def node_version() -> str | None:
-    return _runtime_version("node", "--version")
-
-
-def deno_version() -> str | None:
-    output = _runtime_version("deno", "--version")
-    return output.splitlines()[0] if output else None
-
-
-def _runtime_version(binary: str, *args: str) -> str | None:
-    if shutil.which(binary) is None:
-        return None
-    try:
-        result = subprocess.run(
-            [binary, *args],
-            capture_output=True,
-            text=True,
-            timeout=5,
-            check=False,
-        )
-    except Exception:
-        return None
-    version = (result.stdout or result.stderr).strip()
-    return version or None
-
-
-def ytdlp_ejs_version() -> str | None:
-    try:
-        return metadata.version("yt-dlp-ejs")
-    except metadata.PackageNotFoundError:
-        return None
 
 
 def _validate_cookie_text(content: str) -> tuple[bool, str]:

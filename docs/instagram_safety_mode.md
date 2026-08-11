@@ -21,7 +21,7 @@ Before Instagram analyze/download work, the backend:
 7. Activates cooldown only after repeated real Instagram analyze/download
    failures reach `INSTAGRAM_FAILURE_THRESHOLD`.
 
-TikTok, YouTube, Facebook, Snapchat, X/Twitter, and other platforms are not
+TikTok, Facebook, Snapchat, X/Twitter, and other platforms are not
 limited by Instagram Safety Mode.
 
 ## Error Categories
