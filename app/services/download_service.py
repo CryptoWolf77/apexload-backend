@@ -25,12 +25,19 @@ from app.services.instagram_auth_service import (
 from app.services.instagram_cookie_health import FRIENDLY_INSTAGRAM_UNAVAILABLE
 from app.services.instagram_error_classifier import classify_instagram_error
 from app.services.instagram_safety_service import instagram_safety_service
+from app.services.tiktok_recovery import (
+    TIKTOK_TEMPORARY_MESSAGE,
+    TIKTOK_UNAVAILABLE_MESSAGE,
+    TikTokOperationCancelled,
+    run_ytdlp_with_tiktok_recovery,
+    tiktok_user_message,
+)
 from app.services.ytdlp_analyze_service import (
     FACEBOOK_PHOTO_UNAVAILABLE_MESSAGE,
     INSTAGRAM_PHOTO_UNAVAILABLE_MESSAGE,
     YtDlpAnalyzeService,
 )
-from app.services.ytdlp_options import build_ytdlp_options, configured_instagram_cookiefile
+from app.services.ytdlp_options import configured_instagram_cookiefile
 from app.utils.platform_detector import detect_platform
 
 logger = logging.getLogger("apexload.download")
@@ -115,11 +122,22 @@ class DownloadService:
                 try:
                     self._download_item(job, item, job_dir, base_progress)
                 except Exception as item_exc:
-                    logger.exception(
-                        "Selected item download failed. job_id=%s format=%s",
-                        job_id,
-                        item.formatId,
-                    )
+                    if job.platform == "TikTok":
+                        logger.info(
+                            "TikTok selected item failed. platform=%s operation=%s "
+                            "job_id=%s format=%s final_outcome=%s",
+                            job.platform,
+                            "download",
+                            job_id,
+                            item.formatId,
+                            "failed",
+                        )
+                    else:
+                        logger.exception(
+                            "Selected item download failed. job_id=%s format=%s",
+                            job_id,
+                            item.formatId,
+                        )
                     job.error = self._safe_error(item_exc)
                     job.error_code = self._error_code_for(item_exc)
                     last_item_exception = item_exc
@@ -146,7 +164,17 @@ class DownloadService:
                 round((time.monotonic() - job_started_at) * 1000),
             )
         except Exception as exc:
-            logger.exception("Download failed. job_id=%s", job_id)
+            if job.platform == "TikTok":
+                logger.info(
+                    "TikTok download failed. platform=%s operation=%s job_id=%s "
+                    "final_outcome=%s",
+                    job.platform,
+                    "download",
+                    job_id,
+                    "failed",
+                )
+            else:
+                logger.exception("Download failed. job_id=%s", job_id)
             classification = None
             if job.platform == "Instagram":
                 classification = classify_instagram_error(exc)
@@ -287,7 +315,10 @@ class DownloadService:
         except InstagramAuthError as exc:
             raise RuntimeError(self._download_error_message(job.request.url, exc, item)) from exc
         except Exception as exc:
-            raise RuntimeError(self._download_error_message(job.request.url, exc, item)) from exc
+            message = self._download_error_message(job.request.url, exc, item)
+            if platform == "TikTok":
+                raise RuntimeError(message) from None
+            raise RuntimeError(message) from exc
 
     def _execute_ytdlp_item(
         self,
@@ -307,24 +338,34 @@ class DownloadService:
             "format": self._format_selector(item, platform),
             "progress_hooks": [self._progress_hook(job, base_progress)],
         }
-        options = build_ytdlp_options(
-            platform,
-            "download",
-            option_overrides,
-        )
         if is_audio_item:
-            self._configure_audio_options(options, item)
-        self._ensure_instagram_download_auth(job.request.url, item, options)
-
-        import yt_dlp
+            self._configure_audio_options(option_overrides, item)
 
         before = set(job_dir.iterdir())
-        with yt_dlp.YoutubeDL(options) as ydl:
-            ydl.download([download_url])
+        run_ytdlp_with_tiktok_recovery(
+            platform=platform,
+            operation="download",
+            purpose="download",
+            url=download_url,
+            extra_options=option_overrides,
+            action=lambda ydl: ydl.download([download_url]),
+            cancellation_check=lambda: job.status in {"cancelled", "canceled"},
+            before_retry=lambda: self._cleanup_tiktok_retry_artifacts(
+                job_dir,
+                output_name,
+            ),
+            options_callback=lambda options: self._ensure_instagram_download_auth(
+                job.request.url,
+                item,
+                options,
+            ),
+        )
         after = set(job_dir.iterdir())
         new_files = [path for path in after - before if path.is_file()]
         if not new_files:
             new_files = sorted(job_dir.glob(f"{output_name}.*"))
+        if platform == "TikTok":
+            new_files = self._completed_tiktok_outputs(new_files)
         if is_audio_item:
             new_files = self._validated_audio_outputs(job_dir, item, new_files)
         if not new_files:
@@ -397,19 +438,21 @@ class DownloadService:
             "skip_download": True,
         }
         try:
-            import yt_dlp
-
-            options = build_ytdlp_options(
-                detect_platform(url),
-                "metadata",
-                options,
+            platform = detect_platform(url)
+            download_url = self._download_url(url)
+            info = run_ytdlp_with_tiktok_recovery(
+                platform=platform,
+                operation="download",
+                purpose="metadata",
+                url=download_url,
+                extra_options=options,
+                action=lambda ydl: ydl.extract_info(download_url, download=False),
             )
-
-            with yt_dlp.YoutubeDL(options) as ydl:
-                info = ydl.extract_info(self._download_url(url), download=False)
         except InstagramAuthError as exc:
             raise RuntimeError(f"yt-dlp metadata failed: {self._safe_error(exc)}") from exc
         except Exception as exc:
+            if detect_platform(url) == "TikTok":
+                raise RuntimeError(tiktok_user_message(exc)) from None
             raise RuntimeError(f"yt-dlp metadata failed: {self._safe_error(exc)}") from exc
         if not isinstance(info, dict):
             raise RuntimeError("yt-dlp returned invalid metadata")
@@ -844,13 +887,15 @@ class DownloadService:
 
     def _progress_hook(self, job: DownloadJob, base_progress: int):
         def hook(data: dict) -> None:
+            if job.status in {"cancelled", "canceled"}:
+                raise TikTokOperationCancelled("Download operation cancelled.")
             status = data.get("status")
             if status == "downloading":
                 percent = self._progress_percent(data, base_progress)
                 self._update_job(
                     job,
                     status="processing",
-                    progress=percent,
+                    progress=max(job.progress, percent),
                     message="Downloading",
                 )
             elif status == "finished":
@@ -878,9 +923,63 @@ class DownloadService:
             path.rename(safe_path)
             path = safe_path
 
+        with self._lock:
+            if any(file.filename == path.name for file in job.files):
+                return
+
         file = self.register_external_file(path, file_type)
         with self._lock:
+            if any(existing.filename == path.name for existing in job.files):
+                self._files.pop(file.fileId, None)
+                return
             job.files.append(file)
+
+    def _cleanup_tiktok_retry_artifacts(
+        self,
+        job_dir: Path,
+        output_name: str,
+    ) -> None:
+        prefix = f"{output_name}.".lower()
+        for path in job_dir.iterdir():
+            if not path.is_file() or not path.name.lower().startswith(prefix):
+                continue
+            lower_name = path.name.lower()
+            is_retry_artifact = (
+                lower_name.endswith(".part")
+                or lower_name.endswith(".ytdl")
+                or ".part-" in lower_name
+            )
+            try:
+                is_empty = path.stat().st_size == 0
+                if is_retry_artifact or is_empty:
+                    path.unlink()
+            except OSError:
+                logger.info(
+                    "TikTok retry artifact cleanup skipped. platform=%s "
+                    "operation=%s artifact_type=%s",
+                    "TikTok",
+                    "download",
+                    path.suffix.lower() or "unknown",
+                )
+
+    def _completed_tiktok_outputs(self, paths: list[Path]) -> list[Path]:
+        completed: list[Path] = []
+        seen: set[Path] = set()
+        for path in paths:
+            lower_name = path.name.lower()
+            if (
+                path in seen
+                or not path.is_file()
+                or path.stat().st_size <= 0
+                or lower_name.endswith(".part")
+                or lower_name.endswith(".ytdl")
+                or ".part-" in lower_name
+                or re.search(r"\.f\d+\.", lower_name) is not None
+            ):
+                continue
+            seen.add(path)
+            completed.append(path)
+        return completed
 
     def _update_job(
         self,
@@ -1025,6 +1124,8 @@ class DownloadService:
         item: SelectedDownloadItem | None = None,
     ) -> str:
         message = self._safe_error(exc)
+        if detect_platform(url) == "TikTok":
+            return tiktok_user_message(exc)
         if item and self._is_audio_item(item):
             if "requested format is not available" in message.lower():
                 return "Audio source is not available for this link."
@@ -1044,7 +1145,12 @@ class DownloadService:
         return f"yt-dlp download failed: {message}"
 
     def _error_code_for(self, exc: Exception) -> str | None:
-        if "instagram downloads are temporarily unavailable" in self._safe_error(exc).lower():
+        message = self._safe_error(exc)
+        if message == TIKTOK_TEMPORARY_MESSAGE:
+            return "TIKTOK_TEMPORARILY_UNAVAILABLE"
+        if message == TIKTOK_UNAVAILABLE_MESSAGE:
+            return "TIKTOK_UNAVAILABLE"
+        if "instagram downloads are temporarily unavailable" in message.lower():
             return "INSTAGRAM_COOKIES_INVALID"
         return None
 

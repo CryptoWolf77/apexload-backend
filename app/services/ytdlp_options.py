@@ -11,6 +11,22 @@ from app.services.instagram_auth_service import (
 logger = logging.getLogger("apexload.ytdlp_options")
 
 
+class _SafeTikTokYtDlpLogger:
+    """Prevent yt-dlp from emitting raw TikTok URLs or extractor text."""
+
+    def debug(self, _message: str) -> None:
+        return None
+
+    def warning(self, _message: str) -> None:
+        logger.debug("TikTok yt-dlp warning captured by recovery executor.")
+
+    def error(self, _message: str) -> None:
+        logger.debug("TikTok yt-dlp error captured by recovery executor.")
+
+
+_SAFE_TIKTOK_LOGGER = _SafeTikTokYtDlpLogger()
+
+
 def build_ytdlp_options(
     platform: str,
     purpose: str,
@@ -39,6 +55,11 @@ def build_ytdlp_options(
     if platform == "Instagram":
         options.update(_instagram_auth_options())
         impersonate_target = build_impersonate_target("chrome")
+        if impersonate_target is not None:
+            options["impersonate"] = impersonate_target
+    elif platform == "TikTok":
+        options["logger"] = _SAFE_TIKTOK_LOGGER
+        impersonate_target = build_supported_impersonate_target("chrome")
         if impersonate_target is not None:
             options["impersonate"] = impersonate_target
     if extra_opts:
@@ -93,6 +114,30 @@ def build_impersonate_target(value: str):
         logger.info("yt-dlp ImpersonateTarget is unavailable.")
         return None
 
-    if hasattr(ImpersonateTarget, "from_str"):
-        return ImpersonateTarget.from_str(value)
-    return ImpersonateTarget(client=value)
+    try:
+        if hasattr(ImpersonateTarget, "from_str"):
+            return ImpersonateTarget.from_str(value)
+        return ImpersonateTarget(client=value)
+    except (TypeError, ValueError):
+        logger.info("Invalid yt-dlp impersonation target requested. target=%s", value)
+        return None
+
+
+def build_supported_impersonate_target(value: str):
+    """Return an impersonation target only when curl-cffi supports it."""
+    target = build_impersonate_target(value)
+    if target is None:
+        return None
+    try:
+        from yt_dlp.networking._curlcffi import CurlCFFIRH
+    except Exception:
+        logger.info(
+            "yt-dlp curl-cffi impersonation is unavailable. target=%s",
+            value,
+        )
+        return None
+
+    if any(target in supported for supported in CurlCFFIRH.supported_targets):
+        return target
+    logger.info("yt-dlp impersonation target is unsupported. target=%s", value)
+    return None

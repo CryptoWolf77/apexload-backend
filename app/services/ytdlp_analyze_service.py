@@ -13,10 +13,12 @@ from app.services.instagram_auth_service import (
     InstagramAuthError,
     get_instagram_auth_status,
 )
-from app.services.ytdlp_options import (
-    build_ytdlp_options,
-    configured_instagram_cookiefile,
+from app.services.tiktok_recovery import (
+    run_ytdlp_with_tiktok_recovery,
+    sanitized_tiktok_video_id,
+    tiktok_user_message,
 )
+from app.services.ytdlp_options import configured_instagram_cookiefile
 from app.utils.platform_detector import detect_platform
 
 logger = logging.getLogger("apexload.analyze")
@@ -493,22 +495,40 @@ class YtDlpAnalyzeService:
         cookiefile: str | None = None,
         extra_options: dict | None = None,
     ) -> dict:
+        platform = detect_platform(url)
         try:
-            import yt_dlp
-
-            platform = detect_platform(url)
-            options = build_ytdlp_options(platform, "analyze")
+            options: dict = {}
             if cookiefile:
                 options["cookiefile"] = cookiefile
             if extra_options:
                 options.update(extra_options)
-            with yt_dlp.YoutubeDL(options) as ydl:
-                info = ydl.extract_info(url, download=False)
+            info = run_ytdlp_with_tiktok_recovery(
+                platform=platform,
+                operation="analyze",
+                purpose="analyze",
+                url=url,
+                extra_options=options,
+                action=lambda ydl: ydl.extract_info(url, download=False),
+            )
         except InstagramAuthError:
             raise
         except UnsupportedUrlError:
             raise
         except Exception as exc:
+            if platform == "TikTok":
+                safe_message = tiktok_user_message(exc)
+                logger.info(
+                    "TikTok analyze failed. platform=%s operation=%s video_id=%s "
+                    "final_outcome=%s",
+                    platform,
+                    "analyze",
+                    sanitized_tiktok_video_id(url),
+                    "failed",
+                )
+                raise AnalyzeServiceError(
+                    message=safe_message,
+                    raw_message=safe_message,
+                ) from None
             raw_message = str(exc)
             logger.warning("yt-dlp analyze failure: %s", raw_message)
             raise AnalyzeServiceError(raw_message=raw_message) from exc
