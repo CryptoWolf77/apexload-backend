@@ -13,6 +13,10 @@ from app.services.instagram_auth_service import (
     InstagramAuthError,
     get_instagram_auth_status,
 )
+from app.services.tiktok_embed_service import (
+    supports_tiktok_embed_fallback,
+    tiktok_embed_service,
+)
 from app.services.tiktok_recovery import (
     run_ytdlp_with_tiktok_recovery,
     sanitized_tiktok_video_id,
@@ -108,7 +112,11 @@ class YtDlpAnalyzeService:
         else:
             logger.info("yt-dlp analyze started")
             info = self._extract_info(normalized_url)
-            source = "yt_dlp"
+            source = (
+                "tiktok_embed"
+                if platform == "TikTok" and info.get("extractor") == "tiktok_embed"
+                else "yt_dlp"
+            )
         media_info = self._select_media_info(info)
         media_type = self.detect_media_type(media_info, platform, normalized_url)
         logger.info("yt-dlp analyze success. mediaType=%s", media_type)
@@ -496,6 +504,11 @@ class YtDlpAnalyzeService:
         extra_options: dict | None = None,
     ) -> dict:
         platform = detect_platform(url)
+        embed_fallback = None
+        if platform == "TikTok" and supports_tiktok_embed_fallback(url):
+            embed_fallback = lambda _error: tiktok_embed_service.resolve(
+                url
+            ).as_ytdlp_info()
         try:
             options: dict = {}
             if cookiefile:
@@ -509,6 +522,7 @@ class YtDlpAnalyzeService:
                 url=url,
                 extra_options=options,
                 action=lambda ydl: ydl.extract_info(url, download=False),
+                embed_fallback=embed_fallback,
             )
         except InstagramAuthError:
             raise
@@ -1554,6 +1568,43 @@ class YtDlpAnalyzeService:
         thumbnail: str,
         platform: str = "",
     ) -> list[FormatOption]:
+        if platform == "TikTok" and info.get("extractor") == "tiktok_embed":
+            width = self._valid_dimension(info.get("width"))
+            height = self._valid_dimension(info.get("height"))
+            resolution = min(width, height) if width and height else width or height
+            quality = f"{resolution}p" if resolution else "source"
+            return [
+                FormatOption(
+                    id="best",
+                    label=f"MP4 {quality}" if resolution else "MP4 Video",
+                    type="video",
+                    quality=quality,
+                    size="Unknown",
+                    premium=False,
+                    available=True,
+                ),
+                FormatOption(
+                    id="mp3",
+                    label="MP3 Audio",
+                    type="audio",
+                    quality="audio",
+                    size="Unknown",
+                    premium=True,
+                    available=True,
+                ),
+                FormatOption(
+                    id="thumbnail",
+                    label="Thumbnail JPG",
+                    type="image",
+                    quality="thumbnail",
+                    size="Unknown" if thumbnail else None,
+                    premium=False,
+                    available=bool(thumbnail),
+                    unavailableReason=(
+                        None if thumbnail else "Not available on this clip"
+                    ),
+                ),
+            ]
         if platform == "Instagram":
             resolutions = self._available_resolutions(info)
         else:

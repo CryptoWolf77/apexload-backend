@@ -10,6 +10,11 @@ from app.services.instagram_auth_service import (
 
 logger = logging.getLogger("apexload.ytdlp_options")
 
+TIKTOK_CHROME_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36"
+)
+
 
 class _SafeTikTokYtDlpLogger:
     """Prevent yt-dlp from emitting raw TikTok URLs or extractor text."""
@@ -57,13 +62,16 @@ def build_ytdlp_options(
         impersonate_target = build_impersonate_target("chrome")
         if impersonate_target is not None:
             options["impersonate"] = impersonate_target
-    elif platform == "TikTok":
+    if extra_opts:
+        options.update(extra_opts)
+    if platform == "TikTok":
         options["logger"] = _SAFE_TIKTOK_LOGGER
+        headers = dict(options.get("http_headers") or {})
+        headers["User-Agent"] = TIKTOK_CHROME_USER_AGENT
+        options["http_headers"] = headers
         impersonate_target = build_supported_impersonate_target("chrome")
         if impersonate_target is not None:
             options["impersonate"] = impersonate_target
-    if extra_opts:
-        options.update(extra_opts)
     return options
 
 

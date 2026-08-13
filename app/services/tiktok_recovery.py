@@ -141,6 +141,7 @@ def run_ytdlp_with_tiktok_recovery(
     cancellation_check: Callable[[], bool] | None = None,
     before_retry: Callable[[], None] | None = None,
     options_callback: Callable[[dict[str, Any]], None] | None = None,
+    embed_fallback: Callable[[TikTokRecoveryError], T] | None = None,
     sleep_func: Callable[[float], None] | None = None,
     jitter_func: Callable[[float, float], float] | None = None,
 ) -> T:
@@ -227,7 +228,53 @@ def run_ytdlp_with_tiktok_recovery(
                 "retrying" if attempt < TIKTOK_MAX_ATTEMPTS else "failed",
             )
             if attempt >= TIKTOK_MAX_ATTEMPTS:
-                raise TikTokRecoveryError(classification, attempt) from None
+                recovery_error = TikTokRecoveryError(classification, attempt)
+                if embed_fallback is None:
+                    raise recovery_error from None
+                _raise_if_cancelled(cancellation_check)
+                logger.info(
+                    "TikTok embed fallback start. platform=%s operation=%s "
+                    "attempt=%s retry_classification=%s video_id=%s "
+                    "fallback_used=%s result=%s",
+                    platform,
+                    operation,
+                    attempt,
+                    classification,
+                    video_id,
+                    True,
+                    "started",
+                )
+                try:
+                    result = embed_fallback(recovery_error)
+                except TikTokOperationCancelled:
+                    raise
+                except Exception:
+                    logger.info(
+                        "TikTok embed fallback finish. platform=%s operation=%s "
+                        "attempt=%s retry_classification=%s video_id=%s "
+                        "fallback_used=%s result=%s",
+                        platform,
+                        operation,
+                        attempt,
+                        classification,
+                        video_id,
+                        True,
+                        "failed",
+                    )
+                    raise recovery_error from None
+                logger.info(
+                    "TikTok embed fallback finish. platform=%s operation=%s "
+                    "attempt=%s retry_classification=%s video_id=%s "
+                    "fallback_used=%s result=%s",
+                    platform,
+                    operation,
+                    attempt,
+                    classification,
+                    video_id,
+                    True,
+                    "succeeded",
+                )
+                return result
 
             if before_retry is not None:
                 before_retry()

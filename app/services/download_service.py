@@ -25,6 +25,10 @@ from app.services.instagram_auth_service import (
 from app.services.instagram_cookie_health import FRIENDLY_INSTAGRAM_UNAVAILABLE
 from app.services.instagram_error_classifier import classify_instagram_error
 from app.services.instagram_safety_service import instagram_safety_service
+from app.services.tiktok_embed_service import (
+    supports_tiktok_embed_fallback,
+    tiktok_embed_service,
+)
 from app.services.tiktok_recovery import (
     TIKTOK_TEMPORARY_MESSAGE,
     TIKTOK_UNAVAILABLE_MESSAGE,
@@ -342,6 +346,16 @@ class DownloadService:
             self._configure_audio_options(option_overrides, item)
 
         before = set(job_dir.iterdir())
+        embed_fallback = None
+        if platform == "TikTok" and supports_tiktok_embed_fallback(job.request.url):
+            embed_fallback = lambda _error: self._download_tiktok_embed_fallback(
+                job,
+                item,
+                job_dir,
+                output_name,
+                is_audio_item,
+                base_progress,
+            )
         run_ytdlp_with_tiktok_recovery(
             platform=platform,
             operation="download",
@@ -359,6 +373,7 @@ class DownloadService:
                 item,
                 options,
             ),
+            embed_fallback=embed_fallback,
         )
         after = set(job_dir.iterdir())
         new_files = [path for path in after - before if path.is_file()]
@@ -437,9 +452,14 @@ class DownloadService:
         options = {
             "skip_download": True,
         }
+        platform = detect_platform(url)
+        download_url = self._download_url(url)
+        embed_fallback = None
+        if platform == "TikTok" and supports_tiktok_embed_fallback(download_url):
+            embed_fallback = lambda _error: tiktok_embed_service.resolve(
+                download_url
+            ).as_ytdlp_info()
         try:
-            platform = detect_platform(url)
-            download_url = self._download_url(url)
             info = run_ytdlp_with_tiktok_recovery(
                 platform=platform,
                 operation="download",
@@ -447,6 +467,7 @@ class DownloadService:
                 url=download_url,
                 extra_options=options,
                 action=lambda ydl: ydl.extract_info(download_url, download=False),
+                embed_fallback=embed_fallback,
             )
         except InstagramAuthError as exc:
             raise RuntimeError(f"yt-dlp metadata failed: {self._safe_error(exc)}") from exc
@@ -801,6 +822,117 @@ class DownloadService:
             postprocessor["preferredquality"] = "192"
         options["postprocessors"] = [postprocessor]
         options["keepvideo"] = False
+
+    def _download_tiktok_embed_fallback(
+        self,
+        job: DownloadJob,
+        item: SelectedDownloadItem,
+        job_dir: Path,
+        output_name: str,
+        is_audio_item: bool,
+        base_progress: int,
+    ) -> None:
+        self._cleanup_tiktok_retry_artifacts(job_dir, output_name)
+        media = tiktok_embed_service.resolve(job.request.url)
+        cancellation_check = lambda: job.status in {"cancelled", "canceled"}
+
+        def update_progress(downloaded: int, total: int | None) -> None:
+            if total and total > 0:
+                fraction = min(downloaded / total, 1.0)
+                progress = min(90, base_progress + int(fraction * 75))
+            else:
+                progress = max(base_progress, 25)
+            self._update_job(
+                job,
+                status="processing",
+                progress=max(job.progress, progress),
+                message="Downloading",
+            )
+
+        if is_audio_item:
+            source_path = job_dir / f"{output_name}.source.mp4"
+            output_path = job_dir / f"{output_name}.{self._audio_codec(item)}"
+            tiktok_embed_service.download(
+                media,
+                source_path,
+                progress_callback=update_progress,
+                cancellation_check=cancellation_check,
+            )
+            try:
+                self._convert_tiktok_embed_audio(
+                    job,
+                    item,
+                    source_path,
+                    output_path,
+                )
+            finally:
+                try:
+                    if source_path.exists():
+                        source_path.unlink()
+                except OSError:
+                    logger.info(
+                        "TikTok embed source cleanup skipped. video_id=%s "
+                        "fallback_used=%s result=%s",
+                        media.video_id,
+                        True,
+                        "cleanup_failed",
+                    )
+            return
+
+        output_path = job_dir / f"{output_name}.mp4"
+        tiktok_embed_service.download(
+            media,
+            output_path,
+            progress_callback=update_progress,
+            cancellation_check=cancellation_check,
+        )
+
+    def _convert_tiktok_embed_audio(
+        self,
+        job: DownloadJob,
+        item: SelectedDownloadItem,
+        source_path: Path,
+        output_path: Path,
+    ) -> None:
+        ffmpeg_path = shutil.which("ffmpeg")
+        if not ffmpeg_path:
+            raise RuntimeError("Audio extraction requires FFmpeg on the server.")
+        codec = self._audio_codec(item)
+        command = [
+            ffmpeg_path,
+            "-y",
+            "-i",
+            str(source_path),
+            "-vn",
+        ]
+        if codec == "mp3":
+            command.extend(["-codec:a", "libmp3lame", "-b:a", "192k"])
+        else:
+            command.extend(["-codec:a", "aac", "-b:a", "192k"])
+        command.append(str(output_path))
+        self._update_job(
+            job,
+            status="processing",
+            progress=max(job.progress, 92),
+            message="Preparing file",
+        )
+        try:
+            result = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                timeout=600,
+                check=False,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError("Audio conversion timed out.") from exc
+        if result.returncode != 0 or not output_path.is_file() or output_path.stat().st_size <= 0:
+            try:
+                if output_path.exists():
+                    output_path.unlink()
+            except OSError:
+                pass
+            raise RuntimeError("Audio conversion failed. FFmpeg may be missing on the server.")
 
     def _is_audio_item(self, item: SelectedDownloadItem) -> bool:
         return self._item_type(item) == "audio" or self._format_id(item) in {"mp3", "m4a"}
