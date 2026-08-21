@@ -59,6 +59,10 @@ def test_other_platforms_do_not_receive_tiktok_impersonation(platform: str) -> N
     ("message", "classification"),
     [
         ("Unexpected response from webpage request", "unexpected_webpage_response"),
+        (
+            "Unable to extract universal data for rehydration",
+            "missing_rehydration_data",
+        ),
         ("temporary TikTok webpage challenge failure", "challenge_response"),
         ("HTTP Error 403: Forbidden", "http_403"),
         ("HTTP Error 429: Too Many Requests", "http_429"),
@@ -101,7 +105,10 @@ def test_transient_failure_uses_fresh_instance_and_succeeds_on_attempt_two(
 ) -> None:
     instances = _install_fake_ytdlp(
         monkeypatch,
-        [RuntimeError("Unexpected response from webpage request"), {"id": "ok"}],
+        [
+            RuntimeError("Unable to extract universal data for rehydration"),
+            {"id": "ok"},
+        ],
     )
 
     result = _run_fake_recovery()

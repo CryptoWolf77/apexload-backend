@@ -61,6 +61,10 @@ _CANCELLATION_MARKERS = (
 )
 _TRANSIENT_MARKERS = (
     ("unexpected response from webpage request", "unexpected_webpage_response"),
+    (
+        "unable to extract universal data for rehydration",
+        "missing_rehydration_data",
+    ),
     ("challenge-response", "challenge_response"),
     ("challenge response", "challenge_response"),
     ("webpage challenge", "challenge_response"),

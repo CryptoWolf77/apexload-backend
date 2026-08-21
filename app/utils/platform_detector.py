@@ -9,7 +9,7 @@ def detect_platform(url: str) -> str:
     value = url.strip().lower()
     parsed = urlparse(value if "://" in value else f"https://{value}")
     host = (parsed.hostname or "").lower()
-    if _is_host(host, "tiktok.com"):
+    if _is_host(host, "tiktok.com", "tiktokv.com"):
         return "TikTok"
     if _is_host(host, "instagram.com", "instagr.am"):
         return "Instagram"

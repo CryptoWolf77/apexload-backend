@@ -29,6 +29,7 @@ logger = logging.getLogger("apexload.analyze")
 
 SUPPORTED_HOSTS = (
     "tiktok.com",
+    "tiktokv.com",
     "instagram.com",
     "instagr.am",
     "facebook.com",

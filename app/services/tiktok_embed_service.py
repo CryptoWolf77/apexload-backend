@@ -359,15 +359,15 @@ def parse_tiktok_video_id(url: str) -> str:
         or port not in {None, 443}
     ):
         raise TikTokEmbedError("TikTok link must be a public HTTPS video URL.")
-    canonical_match = re.fullmatch(
-        r"/@[^/]*/video/[0-9]{15,22}/?",
+    public_video_match = re.fullmatch(
+        r"/(?:@[^/]*/video|share/video)/[0-9]{15,22}/?",
         parsed.path,
     )
     embed_match = re.fullmatch(
         r"/(?:embed|player/v1)/([0-9]{15,22})/?",
         parsed.path,
     )
-    if canonical_match:
+    if public_video_match:
         video_id = sanitized_tiktok_video_id(url)
     elif embed_match:
         video_id = embed_match.group(1)

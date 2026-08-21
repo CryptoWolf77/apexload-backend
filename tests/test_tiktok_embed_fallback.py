@@ -39,6 +39,7 @@ from app.services.ytdlp_analyze_service import (
 VIDEO_ID = "7000000000000000001"
 TIKTOK_URL = f"https://www.tiktok.com/@creator/video/{VIDEO_ID}"
 EMPTY_CREATOR_TIKTOK_URL = f"https://www.tiktok.com/@/video/{VIDEO_ID}/"
+SHARE_TIKTOK_URL = f"https://www.tiktokv.com/share/video/{VIDEO_ID}/"
 MEDIA_URL = (
     "https://v16-webapp-prime.us.tiktok.com/video/tos/useast2a/public.mp4"
     "?token=top-secret-signature"
@@ -295,9 +296,9 @@ def test_missing_or_invalid_embed_data_fails_safely(body: str) -> None:
     [
         "https://www.tiktok.com/@creator/video/123",
         "https://www.tiktok.com/t/ZShortCode/",
-        "https://www.tiktokv.com/share/video/7000000000000000001/",
         "https://example.com/@creator/video/7000000000000000001",
         "http://www.tiktok.com/@creator/video/7000000000000000001",
+        "http://www.tiktokv.com/share/video/7000000000000000001/",
         "file://www.tiktok.com/@creator/video/7000000000000000001",
         "https://user:password@www.tiktok.com/@creator/video/7000000000000000001",
     ],
@@ -421,7 +422,10 @@ def test_signed_media_url_is_never_logged_in_full(
     assert media.media_host in caplog.text
 
 
-@pytest.mark.parametrize("url", [TIKTOK_URL, EMPTY_CREATOR_TIKTOK_URL])
+@pytest.mark.parametrize(
+    "url",
+    [TIKTOK_URL, EMPTY_CREATOR_TIKTOK_URL, SHARE_TIKTOK_URL],
+)
 def test_internal_diagnostic_matches_production_tiktok_id_parsing(
     monkeypatch: pytest.MonkeyPatch,
     url: str,

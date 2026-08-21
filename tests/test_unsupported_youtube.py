@@ -33,6 +33,7 @@ def test_supported_domain_in_youtube_query_does_not_bypass_rejection() -> None:
     ("url", "platform"),
     [
         ("https://www.tiktok.com/@creator/video/1", "TikTok"),
+        ("https://www.tiktokv.com/share/video/7000000000000000001/", "TikTok"),
         ("https://www.instagram.com/reel/example/", "Instagram"),
         ("https://www.snapchat.com/spotlight/example", "Snapchat"),
         ("https://x.com/creator/status/1", "X/Twitter"),
@@ -43,6 +44,12 @@ def test_supported_domain_in_youtube_query_does_not_bypass_rejection() -> None:
 )
 def test_remaining_platforms_stay_supported(url: str, platform: str) -> None:
     assert detect_platform(url) == platform
+
+
+def test_tiktok_share_host_is_allowed_by_analyze_validation() -> None:
+    url = "https://www.tiktokv.com/share/video/7000000000000000001/"
+
+    assert YtDlpAnalyzeService()._validate_url(url) == url
 
 
 @pytest.mark.parametrize("url", YOUTUBE_URLS)
