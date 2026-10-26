@@ -398,8 +398,11 @@ curl http://127.0.0.1:8000/api/debug/ytdlp-auth
 `yt-dlp` is pinned to a stable version for production reliability:
 
 ```text
-yt-dlp==2026.07.04
+yt-dlp[curl-cffi]==2026.10.26
 ```
+
+This release requires Python 3.11 or newer; the production Docker image uses
+Python 3.12. Keep the `curl-cffi` extra enabled for browser impersonation.
 
 Platforms such as Instagram, TikTok, and Facebook change often, so
 `yt-dlp` should be updated regularly, but only after local testing. Do not use
