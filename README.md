@@ -398,7 +398,7 @@ curl http://127.0.0.1:8000/api/debug/ytdlp-auth
 `yt-dlp` is pinned to a stable version for production reliability:
 
 ```text
-yt-dlp[curl-cffi]==2026.10.26
+yt-dlp[curl-cffi]==2026.11.23
 ```
 
 This release requires Python 3.11 or newer; the production Docker image uses
